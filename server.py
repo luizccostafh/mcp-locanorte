@@ -1,0 +1,19 @@
+from fastapi import FastAPI
+from mcp.server.fastmcp import FastMCP
+import uvicorn
+
+mcp = FastMCP("MCP Locanorte HTTP")
+app = FastAPI()
+
+@mcp.tool()
+def status_locanorte() -> str:
+    return "MCP Locanorte ativo via HTTP."
+
+@mcp.tool()
+def resumo_locanorte() -> str:
+    return "Locanorte Caçambas e Resíduos Ltda."
+
+app.mount("/mcp", mcp.sse_app())
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="127.0.0.1", port=8000)
