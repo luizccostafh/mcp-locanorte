@@ -13,7 +13,8 @@ def status_locanorte() -> str:
 def resumo_locanorte() -> str:
     return "Locanorte Caçambas e Resíduos Ltda."
 
-app.mount("/mcp", mcp.sse_app())
+# 🔴 ESSA LINHA É A CHAVE
+app.mount("/", mcp.sse_app())
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
