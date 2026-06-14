@@ -1,7 +1,15 @@
 import os
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
-mcp = FastMCP("MCP Locanorte HTTP")
+mcp = FastMCP(
+    "MCP Locanorte HTTP",
+    host="0.0.0.0",
+    port=int(os.environ.get("PORT", 8000)),
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=False,
+    ),
+)
 
 @mcp.tool()
 def status_locanorte() -> str:
@@ -12,6 +20,4 @@ def resumo_locanorte() -> str:
     return "Locanorte Caçambas e Resíduos Ltda."
 
 if __name__ == "__main__":
-    mcp.settings.host = "0.0.0.0"
-    mcp.settings.port = int(os.environ.get("PORT", 8000))
     mcp.run(transport="streamable-http")
