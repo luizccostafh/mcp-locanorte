@@ -3,9 +3,11 @@
 Documento de transferência de contexto. Resume o que foi construído e decidido na criação/deploy
 do servidor MCP da Locanorte, para que o trabalho continue no Claude Code sem perder histórico.
 
-> **Atualizado em 2026-06-19** para refletir o código realmente no ar (`server.py` v1.12.0,
-> 8 tools, financeiro + operacional `coletas` e `centro_custo` (rentabilidade por caminhão)).
-> A versão anterior deste handoff descrevia tools "placeholder"; isso já não é verdade.
+> **Atualizado em 2026-07-07** — reconciliação GitHub/Render/Kondado (ver seção 6.1) corrige
+> a suposição de que a `tabela_dre_omie` estava vazia (não está mais) e atualiza as datas de
+> sync das tabelas operacionais. Texto anterior (2026-06-19) descrevia o `server.py` v1.12.0,
+> 8 tools, financeiro + operacional `coletas` e `centro_custo` (rentabilidade por caminhão) —
+> isso permanece válido, só os pontos acima foram corrigidos.
 
 ---
 
@@ -164,6 +166,52 @@ Teste feito chamando as tools pelo conector:
 ➡️ **Novo bloqueio resolvido no código:** `follow_redirects=True` em `_fetch_csv` (ver seção 5, item 5).
    Falta subir o `server.py` corrigido para o Render redeployar e validar os números do financeiro.
 
+### 6.1 Nova verificação (2026-07-07) — GitHub / Render / Kondado
+
+Checagem cruzada dos três lados, feita a partir de uma sessão remota (Claude Code on the web)
+cujo proxy de rede **bloqueia** `mcp-locanorte.onrender.com` (egress allowlist não inclui o host) —
+por isso não foi possível chamar as tools do MCP Locanorte ao vivo diretamente. A validação usou
+GitHub MCP, o MCP nativo do Kondado (`MCP_KONDADO`, reapontado para o destino 40059) e arquivos
+que o usuário exportou manualmente (DRE em `.xlsx`, lote de NFS-e em `.zip`).
+
+- **GitHub:** `main` no commit `f83c812` (`server.py` v1.12.0, 1370 linhas, 8 tools). Confirmado.
+- **Render:** deploy do commit `f83c812`, status **Live** (log: `Application startup complete`,
+  `Uvicorn running on 0.0.0.0:$PORT`, `Your service is live`). Auto-Deploy On Commit funcionando —
+  Render está no mesmo HEAD do GitHub. Status page do Render também sem incidentes no período.
+- **Kondado (destino 40059):** confirmado ativo — 36 integrações Omie, 53 tabelas no warehouse.
+  **Correção importante:** a `tabela_dre_omie` **NÃO está mais vazia** — **1303 linhas**, sync em
+  **2026-06-23**. Isso contradiz a suposição registrada na seção 8, item 3 (versão anterior deste
+  handoff) de que ela estaria vazia no 40059. Com base na lógica de `_resolve_faturamento()` e
+  `dre_resultado()` no `server.py`, a DRE **é a fonte primária de fato** para qualquer competência
+  já fechada (ex.: `2026-06`) — o fallback para NFS-e/títulos só entra para o **mês corrente ainda
+  em aberto** (sem linha na DRE), que é o comportamento correto/esperado do código.
+  - ⚠️ **Achado de código:** `faturamento()` só cai para o fallback se `linhas_consideradas == 0`
+    (guarda correta). Já `dre_resultado()` **não tem essa guarda** — se `_fetch_csv(TBL_DRE)` não
+    lançar exceção mas devolver zero linhas pra competência pedida, ele retorna `resultado_total: 0`
+    como se fosse o resultado oficial, sem cair para `_dre_resultado_titulos` nem sinalizar que o
+    mês simplesmente ainda não fechou. Vale considerar adicionar a mesma guarda de `faturamento()`.
+  - **Datas de sync divergentes por área:** títulos/DRE/categorias em `2026-06-23`; saldo bancário,
+    Ordens de Serviço e NFS-e ainda em `2026-06-17` (mais antigo — atualiza a nota da seção 8, item 2,
+    que citava `2026-05-26`). Vale confirmar a cadência do pipeline dessas tabelas operacionais.
+  - **Reconciliação DRE × NFS-e (jun/2026), a partir dos arquivos exportados pelo usuário:**
+    Receita Líquida Operacional (DRE) = **R$ 275.104,82** vs. valor líquido das NFS-e emitidas no
+    mês (73 notas do lote completo, `vLiq`) = **R$ 304.665,88** — gap aparente de **~R$ 29.560**.
+    **Explicado (mesmo dia, `FECHAMENTO_202606_V5.xlsx`, aba `Reconciliacao`):** o fechamento contábil
+    oficial de junho usa um corte em **notas emitidas 01–25/jun** (68 notas) = **R$ 294.187,45**, que
+    **bate exatamente** com a Receita Bruta de Vendas que a DRE registrou para o mês. Ou seja, a maior
+    parte do gap é efeito do **corte de fechamento em 25/jun** (o lote completo do usuário tinha 73
+    notas até dia 30) — não é inconsistência entre DRE e NFS-e. A mesma planilha também reconcilia
+    folha de pagamento, INSS/FGTS/PIS/COFINS/ISS e guias a recolher de jun/2026 com Δ ≈ 0 em quase
+    todos os itens — é a fonte de verdade do fechamento mensal, útil pra validar futuras tools de DRE.
+  - **Tabela consolidada nova:** modelo Kondado **ID 9926** (`locanorte_kondado_mcp`, fonte
+    `lancamentos_omie`) criado em **2026-07-07**, unindo pagar+receber+categorias-rateadas+`valor_dre`
+    numa única tabela (colunas: `tipo_lancamento`, `codigo_lancamento_omie`, `codigo_cliente_fornecedor`,
+    `codigo_projeto`, `data_competencia`, `data_previsao`, `data_vencimento`, `status_titulo`,
+    `codigo_categoria`, `percentual_categoria`, `valor_rateado`, `valor_dre`, `valor_documento`).
+    **O `server.py` ainda NÃO lê essa tabela** — continua nas tabelas cruas (`omie_lancamentos_contas_*`,
+    `tabela_dre_omie`). Migração em avaliação; pendência: confirmar se `valor_documento` vem repetido
+    por linha de rateio de categoria (senão a soma duplica o valor do título) antes de implementar.
+
 ---
 
 ## 7. Conexão com o Claude (conector)
@@ -181,15 +229,22 @@ Teste feito chamando as tools pelo conector:
 2. ✅ **Tools operacionais/financeiras** — `fluxo_caixa` (v1.5.0), `faturamento` (v1.6.0),
    `dre_resultado` (v1.7.0), `top_clientes` (v1.8.0), `coletas` (v1.11.0) e `centro_custo` (v1.12.0 —
    rentabilidade por caminhão) entregues e validados. A seguir: detalhe de uma OS, clientes por
-   tag/característica. Atenção: `coletas`, `centro_custo` e `caixa_hoje` refletem o ÚLTIMO sync
-   (tabelas operacionais com `last_updated` em 2026-05-26) — conferir a cadência do pipeline.
+   tag/característica. Atenção: `coletas`, `centro_custo` e `caixa_hoje` refletem o ÚLTIMO sync —
+   sync de `omie_saldo_conta_corrente`/OS/NFS-e em `2026-06-17` (mais antigo que títulos/DRE/categorias,
+   em `2026-06-23`; conferido em 2026-07-07, ver seção 6.1) — conferir a cadência do pipeline dessas
+   tabelas operacionais especificamente.
    ✅ Bug do `caixa_hoje.data_saldo_base` voltar no futuro: corrigido na v1.11.1 (ignora saldo de data
    futura). ⚠️ `centro_custo`: confirmar onde o Omie/Kondado guardam o centro de custo nas contas a pagar
    (pode estar num rateio/filha) — se `custo` voltar `indisponivel`, apontar `KONDADO_COL_PAGAR_CC` ou
    adicionar o join pela filha numa v1.12.1.
-3. ⚠️ **DRE oficial** — a `tabela_dre_omie` (kubo) está VAZIA no 40059; por isso `faturamento` cai
-   p/ NFS-e e `dre_resultado` cai p/ aproximação por títulos. Reconstruir a transformação destrava
-   o Resultado Operacional oficial (jan–jun ≈ +629 mil, ver a referência DAX).
+3. ✅ **DRE oficial (correção 2026-07-07)** — a `tabela_dre_omie` **NÃO está mais vazia** no 40059
+   (1303 linhas, sync 2026-06-23; ver seção 6.1). O `server.py` já usa a DRE como fonte primária para
+   competências fechadas; `faturamento`/`dre_resultado` só caem no fallback (NFS-e/títulos) para o mês
+   corrente ainda em aberto. ⚠️ Pendências: (a) `dre_resultado()` não tem a mesma guarda de
+   `linhas_consideradas > 0` que `faturamento()` tem — pode reportar `resultado_total: 0` no lugar de
+   cair pro fallback quando a competência pedida ainda não tem linha na DRE; (b) reconciliar o gap de
+   ~R$ 29.560 encontrado em jun/2026 entre a Receita Líquida da DRE e o valor líquido das NFS-e emitidas
+   no mês.
 4. ✅ **Parâmetros tipados** — entregue na v1.6.0 (`competencia`/`ano`/`limite`).
 5. **Governança / segurança** — religar `enable_dns_rebinding_protection=True` com allowlist
    (`allowed_hosts=["mcp-locanorte.onrender.com", "mcp-locanorte.onrender.com:*"]`,

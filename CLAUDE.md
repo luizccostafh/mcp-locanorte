@@ -141,14 +141,21 @@ Substituição do Kondado fica para quando houver condições de internalizar o 
    o centro de custo costuma vir num rateio/distribuição/filha). Na 1ª execução, se `custo` voltar
    `indisponivel`, usar o `colunas_disponiveis` p/ apontar `KONDADO_COL_PAGAR_CC` — ou adicionar o join
    pela filha (ex.: `omie_lancamentos_contas_pagar_departamentos`) numa v1.12.1.
-3. ⚠️ **DRE oficial**: a `tabela_dre_omie` (transformação "kubo") está VAZIA no destino 40059 — por isso
-   `faturamento` cai p/ NFS-e e `dre_resultado` cai p/ aproximação por títulos. Reconstruir essa
-   transformação no Kondado destrava o Resultado Operacional oficial (jan–jun ≈ +629 mil, ver DAX).
-4. ⚠️ **Sync do Kondado**: tabelas operacionais com `last_updated` em 2026-05-26 (cadência/parada do
-   pipeline). `coletas`, `centro_custo` e `caixa_hoje` refletem esse corte — conferir a cadência do sync.
+3. ✅ **DRE oficial (correção 2026-07-07)**: a `tabela_dre_omie` **NÃO está mais vazia** no destino 40059
+   (1303 linhas, sync 2026-06-23; detalhe completo em @HANDOFF.md, seção 6.1). O `server.py` já usa a
+   DRE como fonte primária para competências fechadas (ex.: `2026-06`); `faturamento`/`dre_resultado`
+   só caem no fallback (NFS-e/títulos) para o mês corrente ainda em aberto — comportamento correto.
+   ⚠️ Pendências: (a) `dre_resultado()` não tem a mesma guarda de `linhas_consideradas > 0` que
+   `faturamento()` tem — pode reportar `resultado_total: 0` em vez de cair pro fallback quando a
+   competência pedida ainda não tem linha na DRE; (b) o gap antes observado entre Receita Líquida
+   (DRE) e NFS-e do mês é, em boa parte, efeito do corte de fechamento contábil em 25/jun (não é
+   inconsistência de dados) — ver @HANDOFF.md, seção 6.1.
+4. ✅ **Sync do Kondado (correção 2026-07-07)**: datas reais por área — títulos/DRE/categorias em
+   `2026-06-23`; saldo bancário (`omie_saldo_conta_corrente`), Ordens de Serviço e NFS-e em `2026-06-17`
+   (mais antigo). `coletas`, `centro_custo` e `caixa_hoje` refletem esse corte mais antigo — conferir a
+   cadência do pipeline dessas tabelas operacionais especificamente.
    ✅ O bug de `caixa_hoje.data_saldo_base` voltar com data FUTURA foi corrigido na v1.11.1 (ignora linhas
-   de saldo com data futura); com isso o `data_saldo_base` passa a refletir o último saldo real (≈ 26/05
-   enquanto o sync estiver parado). O frescor em si depende de religar o sync — ação no Kondado, não no código.
+   de saldo com data futura). O frescor em si depende de religar o sync — ação no Kondado, não no código.
 5. Governança: religar `enable_dns_rebinding_protection=True` com allowlist do domínio + auth por token.
    Inclui rotação periódica do `KONDADO_TOKEN` → menu ☰ do destino Via Kondado → "Alterar token"
    → atualizar no Render → validar com as tools (procedimento completo em @HANDOFF.md, seção 10).
