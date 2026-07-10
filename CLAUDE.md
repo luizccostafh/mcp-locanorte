@@ -25,6 +25,20 @@ dados operacionais (caçambas, coletas, clientes) e governança.
 - **Endpoint MCP: `https://mcp-locanorte.onrender.com/mcp`** (Streamable HTTP)
 - Local: `python server.py` sobe em `0.0.0.0:8000` (fallback quando não há `$PORT`)
 
+## COMANDOS ÚTEIS (não há suíte de testes automatizados neste repo)
+Repo de um único arquivo (`server.py`) sem `pytest`/linter configurado. Para validar uma mudança:
+1. **Checagem de sintaxe:** `python -m py_compile server.py` (rápido, pega erro de sintaxe/import antes do commit).
+2. **Rodar local:** `python server.py` → sobe em `0.0.0.0:8000`. Sem `KONDADO_TOKEN` no ambiente local,
+   `status_locanorte` funciona normalmente (`kondado_configurado: false`) e `resumo_locanorte` entrega
+   só a base cadastral (financeiro `"indisponivel"`) — isso é esperado, não é bug.
+3. **Smoke-test do endpoint** (local ou produção): `curl -s http://localhost:8000/mcp` (ou a URL do Render)
+   deve responder o JSON-RPC `"Not Acceptable: Client must accept text/event-stream"` — é o sinal de que
+   o transporte `streamable-http` está de pé (ver CONVENÇÕES).
+4. Para validar uma tool específica de ponta a ponta, é preciso um `KONDADO_TOKEN` válido (só existe no
+   Render) e chamar via um cliente MCP (ex.: o conector do Claude) — não há mock do Kondado neste repo.
+5. Push na `main` → Render redeploya sozinho (Auto-Deploy On Commit); confira os logs do deploy
+   (`Application startup complete`, `Uvicorn running on 0.0.0.0:$PORT`) e então revalide pelas tools.
+
 ## ⚙️ VARIÁVEIS DE AMBIENTE (Render → Environment) — OBRIGATÓRIO
 Sem `KONDADO_TOKEN`, todo o bloco financeiro de `resumo_locanorte` retorna
 `status: "indisponivel"` (entrega só a base cadastral). Verificado ao vivo em 2026-06-16:
