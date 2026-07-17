@@ -55,7 +55,15 @@ Relação com o **Kondado** (decisão do usuário): o Kondado continua sendo a c
 
 ---
 
-## 3. server.py atual (v1.15.0 — no ar)
+## 3. server.py atual (v1.16.0 — no ar)
+
+> **v1.16.0 — `centro_custo` DESTRAVADO (rentabilidade por caminhão):** usa o RATEIO financeiro
+> (tabelas-filhas `omie_lancamentos_contas_{pagar,receber}_distribuicao`, `distribuicao_ccoddep` +
+> `distribuicao_nvaldep`), juntando ao título-pai por `codigo_lancamento_omie` p/ excluir CANCELADO e
+> filtrar competência. NOME do caminhão via `omie_departamentos` (placas `2.x CAM-...`). Substitui a
+> v1.12.0 (que buscava `ncodcc` no título — não existe lá; a receita das OS não era por caminhão).
+> ⚠️ A receita costuma vir rateada por OPERAÇÃO (4.x) e o custo por CAMINHÃO (2.x)/ÁREA — para margem por
+> caminhão/serviço, alinhar o rateio no Omie (campo `aviso` na saída).
 
 > **v1.15.0 — `dre_resultado` ganha o DEMONSTRATIVO (DRE linha a linha):** `demonstrativo_realizado`
 > traz a DRE realizada por `descricaodre_n3` (ordenada pelo código), com subtotais por grupo n1 e o

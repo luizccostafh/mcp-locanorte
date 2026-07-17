@@ -15,7 +15,7 @@ dados operacionais (caçambas, coletas, clientes) e governança.
 - HTTP client: **httpx** (consome o hub do Kondado em CSV)
 - Repositório: GitHub `luizccostafh/mcp-locanorte`, branch `main`
 - Hospedagem: **Render** (Web Service, plano **Standard**, always-on)
-- Arquivo principal: `server.py` (contrato **v1.15.0**)
+- Arquivo principal: `server.py` (contrato **v1.16.0**)
 
 ## COMO (rodar / deploy)
 - Build Command (Render): `pip install -r requirements.txt`
@@ -99,7 +99,7 @@ depois do fix `follow_redirects=True` (ver Regra de Ouro nº6).
    então o 302 estoura em `raise_for_status()` e todo o financeiro vira "indisponível".
    Correção: criar o client com `httpx.Client(..., follow_redirects=True)` em `_fetch_csv`.
 
-## TOOLS ATUAIS (v1.15.0 — dados reais, retornam dict/JSON) — 9 tools
+## TOOLS ATUAIS (v1.16.0 — dados reais, retornam dict/JSON) — 9 tools
 - `status_locanorte()` → health-check estruturado: serviço, status, transporte,
   `contrato_versao`, `kondado_configurado` (bool), `data_referencia` (TZ America/Sao_Paulo).
 - `resumo_locanorte(competencia?)` → resumo gerencial: base cadastral (sempre) + bloco `financeiro`
@@ -130,15 +130,15 @@ depois do fix `follow_redirects=True` (ver Regra de Ouro nº6).
   locação/coleta de caçamba): total e valor (exclui CANCELADA), faturadas x não faturadas, quebras por
   etapa, centro de custo (qual caminhão), cliente (NOME), tipo de serviço (`cdescserv` + soma de `nqtde`)
   e mês. `competencia='AAAA-MM'` filtra pela data de previsão. Reflete o ÚLTIMO sync do Kondado.
-- `centro_custo(competencia?, limite=10)` → **(v1.12.0)** rentabilidade por **centro de custo (caminhão)**:
-  cruza a RECEITA das OS (soma de `cabecalho_nvalortotal` por `informacoesadicionais_ncodcc`, exclui
-  CANCELADA) com o CUSTO das contas a pagar do mesmo centro de custo (soma de `valor_documento`, exclui
-  CANCELADO). Saída por CC: `receita_os`, `custo_pagar`, `rentabilidade` (= receita − custo) e `margem_pct`,
-  ranqueada por rentabilidade, com `totais`. `competencia='AAAA-MM'` opcional (receita por previsão da OS,
-  custo por vencimento do título). A coluna de centro de custo nas contas a pagar é AUTO-DETECTADA
-  (candidatos + `KONDADO_COL_PAGAR_CC`); se não for achada (no Omie o centro de custo pode estar num
-  rateio/filha), o bloco `custo` volta `indisponivel` com `colunas_disponiveis` — a receita por CC ainda
-  sai (degradação graciosa). Nome do caminhão é OPT-IN via `KONDADO_TBL_CC` (default exibe o código `ncodcc`).
+- `centro_custo(competencia?, limite=10)` → **(v1.16.0)** rentabilidade por **centro de custo (caminhão/área)**:
+  RECEITA (rateio a receber) − CUSTO (rateio a pagar) no MESMO grão de centro de custo, a partir das
+  tabelas-filhas `omie_lancamentos_contas_{pagar,receber}_distribuicao` (`distribuicao_ccoddep` +
+  `distribuicao_nvaldep`), juntando ao título-pai por `codigo_lancamento_omie` p/ excluir CANCELADO e
+  filtrar competência (vencimento). NOME do caminhão via `omie_departamentos` (placas `2.x CAM-...`).
+  Saída por CC: `receita`, `custo`, `rentabilidade`, `margem_pct`, ranqueada, com `totais`.
+  **(v1.16.0 substituiu a v1.12.0)** que buscava `ncodcc` no título (não existe lá) e receita das OS
+  (não é por caminhão). ⚠️ `aviso` na saída: a receita costuma vir rateada por OPERAÇÃO (4.x) e o custo
+  por CAMINHÃO (2.x)/ÁREA — para margem por caminhão/serviço, alinhar o rateio no Omie.
 - `lancamentos(competencia?, limite=10)` → **(v1.13.0)** razão **UNIFICADO** de contas a pagar + a receber
   a partir da tabela curada `locanorte_kondado_mcp` (1 linha = lançamento × categoria rateada; `valor_dre`
   já assinado: PAGAR negativo, RECEBER positivo). Exclui CANCELADO. Retorna `a_receber_valor_dre`,
