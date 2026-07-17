@@ -275,6 +275,13 @@ que o usuário exportou manualmente (DRE em `.xlsx`, lote de NFS-e em `.zip`).
    ⚠️ Pendência herdada (2026-07-07): `dre_resultado()` não tem a mesma guarda de `linhas_consideradas
    > 0` que `faturamento()` — pode reportar `resultado_total: 0` em vez de cair no fallback quando a
    competência pedida ainda não tem linha na DRE.
+   🔴 **RESSALVA (DRE_15_07_CORRIGIDA — motor v10):** o Resultado Operacional **corrigido** jan–jun/2026
+   é **R$ 427.889,53**, não os +591.420,03 do servidor. Gap ≈ −163.530,50, dominado pelos **impostos
+   sobre vendas** (ISS/PIS/ISS-retido por serviço, ≈ −125.929,81, calculados das NFS-e) que NÃO estão na
+   `tabela_dre_omie` (montada dos lançamentos do Omie), + refinamentos de custo/despesa. Lógica do código
+   OK; gap é de FONTE. **Decisão (2026-07-17): corrigir no Omie/Kondado** (contador lança os impostos
+   sobre vendas no Omie → Kondado re-sincroniza → `dre_resultado` retorna ~427.889,53 sozinho). Até lá, o
+   servidor reflete o warehouse (591k), não a DRE corrigida (428k).
 4. ✅ **Parâmetros tipados** — entregue na v1.6.0 (`competencia`/`ano`/`limite`).
 5. **Governança / segurança** — religar `enable_dns_rebinding_protection=True` com allowlist
    (`allowed_hosts=["mcp-locanorte.onrender.com", "mcp-locanorte.onrender.com:*"]`,
