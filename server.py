@@ -22,6 +22,16 @@
  Arquitetura: Omie (fonte) -> Kondado (ETL) -> [este MCP] -> Power BI / IA
  Princípio: DEGRADAÇÃO GRACIOSA EM CAMADAS (cada sub-bloco protegido isolado).
 ----------------------------------------------------------------------------
+ v1.15.0 — dre_resultado ganha o DEMONSTRATIVO: a DRE realizada linha a linha (por
+   descricaodre_n3, ordenada pelo código), com subtotais por grupo n1 e o Resultado
+   Operacional — o P&L completo, como no Power BI, a partir da hierarquia JÁ classificada
+   da tabela_dre_omie (sem casamento por nome, sem arquivo que envelhece). Validado com os
+   5 arquivos do contador (categorias_atual, .pbix, modelo v23, FECHAMENTO, plano de contas):
+   TODAS as categorias não-classificadas são intencionalmente "fora da DRE" (empréstimos,
+   PIS/COFINS s/ faturamento = guias a recolher, adiantamentos, retenções, distribuição de
+   lucros) — logo o Resultado Operacional +591.420,03 já é o correto e um motor de
+   classificação por categoria seria redundante. jan–jun/2026: Receita Líquida 1.982.578,58;
+   Lucro Bruto 1.045.100,91; Despesas -453.680,88; Resultado Operacional +591.420,03.
  v1.14.0 — dre_resultado agora entrega o RESULTADO OPERACIONAL correto: soma só os grupos
    operacionais do DRE (n1 (1) Lucro Bruto + (2) Despesas, via KONDADO_DRE_N1_RESULTADO) e
    EXCLUI (3) Investimentos/CAPEX e os lançamentos SEM classificação no DRE (não-operacionais:
@@ -119,7 +129,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("mcp_locanorte")
 
 TZ = ZoneInfo("America/Sao_Paulo")
-CONTRATO_VERSAO = "1.14.0"
+CONTRATO_VERSAO = "1.15.0"
 
 mcp = FastMCP(
     "MCP Locanorte HTTP",
@@ -170,7 +180,11 @@ DRE_NIVEIS = os.environ.get(
     "KONDADO_DRE_NIVEIS",
     "descricaodre_n1,descricaodre_n2,descricaodre_n3,descricaodre_n4,descricaodre_n5,descricaodre_n6",
 )
-COL_DRE_N1 = os.environ.get("KONDADO_COL_DRE_N1", (DRE_NIVEIS.split(",")[0].strip() or "descricaodre_n1"))
+_DRE_NIVEIS_LST = [c.strip() for c in DRE_NIVEIS.split(",") if c.strip()]
+COL_DRE_N1 = os.environ.get("KONDADO_COL_DRE_N1", (_DRE_NIVEIS_LST[0] if _DRE_NIVEIS_LST else "descricaodre_n1"))
+# (v1.15.0) n2/n3 do DRE p/ o demonstrativo linha a linha (a DRE completa).
+COL_DRE_N2 = os.environ.get("KONDADO_COL_DRE_N2", (_DRE_NIVEIS_LST[1] if len(_DRE_NIVEIS_LST) > 1 else "descricaodre_n2"))
+COL_DRE_N3 = os.environ.get("KONDADO_COL_DRE_N3", (_DRE_NIVEIS_LST[2] if len(_DRE_NIVEIS_LST) > 2 else "descricaodre_n3"))
 DRE_RECEITA_MARCADOR = os.environ.get("KONDADO_DRE_RECEITA_MARCADOR", "Receita")
 DRE_COMPETENCIA = os.environ.get("KONDADO_DRE_COMPETENCIA", "")
 # (v1.14.0) Grupos do nível 1 do DRE que COMPÕEM o Resultado Operacional. Default = "1,2"
@@ -666,6 +680,9 @@ def _dre_resultado(dre_rows: list[dict[str, str]], ano: int | None = None,
 
     op_por_mes: dict[str, float] = {}        # resultado OPERACIONAL por competência
     por_n1: dict[str, float] = {}            # todos os n1 (realizado) p/ transparência
+    por_linha: dict[str, float] = {}         # (v1.15.0) demonstrativo: linha do DRE (n3) -> valor (realizado, operacional)
+    grupo_label: dict[str, str] = {}         # número do grupo n1 -> rótulo completo
+    op_grupo: dict[str, float] = {}          # grupo operacional -> valor (realizado)
     capex = nao_classif = 0.0                # excluídos do resultado operacional (escopo todo)
     for r in dre_rows:
         comp = _competencia_de(r.get(COL_DRE_DATA))
@@ -677,7 +694,10 @@ def _dre_resultado(dre_rows: list[dict[str, str]], ano: int | None = None,
         elif not comp.startswith(f"{ano_alvo:04d}-"):
             continue
         v = _to_float(r.get(COL_DRE_VALOR))
-        g = _grupo_n1_dre(r.get(COL_DRE_N1))
+        n1full = str(r.get(COL_DRE_N1, "") or "").strip()
+        g = _grupo_n1_dre(n1full)
+        if g and g not in grupo_label:
+            grupo_label[g] = n1full
         if g in grupos_result:
             op_por_mes[comp] = op_por_mes.get(comp, 0.0) + v
         elif g == "":
@@ -685,8 +705,13 @@ def _dre_resultado(dre_rows: list[dict[str, str]], ano: int | None = None,
         else:
             capex += v                       # (3) Investimentos e quaisquer grupos fora do resultado
         if comp <= ref:
-            n1 = str(r.get(COL_DRE_N1, "") or "").strip() or "(sem classificação DRE)"
-            por_n1[n1] = por_n1.get(n1, 0.0) + v
+            por_n1[n1full or "(sem classificação DRE)"] = por_n1.get(n1full or "(sem classificação DRE)", 0.0) + v
+            if g in grupos_result:
+                op_grupo[g] = op_grupo.get(g, 0.0) + v
+                linha = (str(r.get(COL_DRE_N3, "") or "").strip()
+                         or str(r.get(COL_DRE_N2, "") or "").strip()
+                         or n1full or "(sem linha)")
+                por_linha[linha] = por_linha.get(linha, 0.0) + v
 
     realizado = round(sum(v for c, v in op_por_mes.items() if c <= ref), 2)
     projetado = round(sum(v for c, v in op_por_mes.items() if c >  ref), 2)
@@ -718,6 +743,18 @@ def _dre_resultado(dre_rows: list[dict[str, str]], ano: int | None = None,
             {"linha": k, "valor": round(v, 2)}
             for k, v in sorted(por_n1.items(), key=lambda x: abs(x[1]), reverse=True)
         ],
+        "demonstrativo_realizado": {
+            "criterio": "DRE realizada linha a linha (descricaodre_n3) só dos grupos operacionais; "
+                        "ordenada pelo código do DRE. Subtotais por grupo n1 + Resultado Operacional.",
+            "linhas": [
+                {"linha": k, "valor": round(v, 2)} for k, v in sorted(por_linha.items())
+            ],
+            "subtotais_por_grupo": [
+                {"grupo": grupo_label.get(g, g), "valor": round(op_grupo[g], 2)}
+                for g in sorted(op_grupo)
+            ],
+            "resultado_operacional": realizado,
+        },
     }
 
 
@@ -1458,6 +1495,8 @@ def dre_resultado(ano: int | None = None, competencia: str | None = None) -> dic
     (3) Investimentos/CAPEX e lançamentos SEM classificação no DRE (não-operacionais:
     distribuição de lucros, transferência entre contas, retenções/guias descontadas em
     folha) — reportados à parte em `excluidos` (esses vão para o fluxo de caixa/DFC).
+    Inclui `demonstrativo_realizado`: a DRE linha a linha (Receita → Deduções → Custo →
+    Lucro Bruto → Despesas por tipo → Resultado Operacional), da hierarquia da tabela_dre_omie.
     - ano: filtra um ano (ex.: 2026). Vazio = ano corrente.
     - competencia: 'AAAA-MM' para um único mês (sobrepõe `ano`).
     """

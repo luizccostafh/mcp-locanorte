@@ -15,7 +15,7 @@ dados operacionais (caçambas, coletas, clientes) e governança.
 - HTTP client: **httpx** (consome o hub do Kondado em CSV)
 - Repositório: GitHub `luizccostafh/mcp-locanorte`, branch `main`
 - Hospedagem: **Render** (Web Service, plano **Standard**, always-on)
-- Arquivo principal: `server.py` (contrato **v1.14.0**)
+- Arquivo principal: `server.py` (contrato **v1.15.0**)
 
 ## COMO (rodar / deploy)
 - Build Command (Render): `pip install -r requirements.txt`
@@ -85,7 +85,7 @@ depois do fix `follow_redirects=True` (ver Regra de Ouro nº6).
    então o 302 estoura em `raise_for_status()` e todo o financeiro vira "indisponível".
    Correção: criar o client com `httpx.Client(..., follow_redirects=True)` em `_fetch_csv`.
 
-## TOOLS ATUAIS (v1.14.0 — dados reais, retornam dict/JSON) — 9 tools
+## TOOLS ATUAIS (v1.15.0 — dados reais, retornam dict/JSON) — 9 tools
 - `status_locanorte()` → health-check estruturado: serviço, status, transporte,
   `contrato_versao`, `kondado_configurado` (bool), `data_referencia` (TZ America/Sao_Paulo).
 - `resumo_locanorte(competencia?)` → resumo gerencial: base cadastral (sempre) + bloco `financeiro`
@@ -99,8 +99,11 @@ depois do fix `follow_redirects=True` (ver Regra de Ouro nº6).
   Projeção **conservadora**: paga o vencido, não conta recebível vencido como entrada.
   **(v1.11.1)** `_caixa_hoje` ignora linhas de saldo com data FUTURA (a tabela é série diária com dias
   projetados); só considera `data_saldo <= hoje` e expõe `linhas_futuras_ignoradas`.
-- `dre_resultado(ano?, competencia?)` → **(v1.7.0/v1.10.0/v1.14.0)** **RESULTADO OPERACIONAL** do DRE,
-  REALIZADO x PROJETADO. **(v1.14.0)** soma só os grupos operacionais do DRE (n1 (1) Lucro Bruto +
+- `dre_resultado(ano?, competencia?)` → **(v1.7.0/v1.10.0/v1.14.0/v1.15.0)** **RESULTADO OPERACIONAL** do DRE,
+  REALIZADO x PROJETADO. **(v1.15.0)** inclui `demonstrativo_realizado`: a DRE linha a linha (por
+  `descricaodre_n3`, ordenada pelo código) com subtotais por grupo n1 e o Resultado Operacional — o P&L
+  completo (como no Power BI), da hierarquia já classificada da `tabela_dre_omie`.
+  **(v1.14.0)** soma só os grupos operacionais do DRE (n1 (1) Lucro Bruto +
   (2) Despesas, via `KONDADO_DRE_N1_RESULTADO`) e **EXCLUI** (3) Investimentos/CAPEX e os lançamentos
   SEM classificação no DRE (não-operacionais: distribuição de lucros, transferência entre contas,
   retenções/guias descontadas em folha), reportando-os à parte em `excluidos`. Alinhado à DRE gerencial
@@ -175,6 +178,14 @@ Substituição do Kondado fica para quando houver condições de internalizar o 
    **`MODELO_IMPORTAR_OMIE_PLANO_CONTAS_e_CATEGORIAS_v23`** (Painel do Contador → Importar → Plano de
    Contas; e Categorias x Plano Contábil) para mapear as categorias restantes → depois do próximo sync,
    o `nao_classificado_dre` tende a zerar e o oficial fecha 100%.
+   ✅ **(v1.15.0) VALIDADO com os 5 arquivos do contador** (`categorias_atual`, `.pbix`, modelo v23,
+   `FECHAMENTO_202606_V5`, plano de contas): **TODAS** as categorias não-classificadas são
+   intencionalmente **fora da DRE** — empréstimos, **PIS/COFINS sobre faturamento** (= "guias a recolher"
+   no FECHAMENTO, caixa/passivo), adiantamentos, retenções (INSS/IRRF/ISS/consignado/VT/pensão) e
+   distribuição de lucros. Ou seja, o Resultado Operacional +591.420,03 **já é o correto**; um motor de
+   classificação por categoria seria **redundante** (mesmo número) e mais frágil (casamento por nome +
+   snapshot que envelhece). O que a v1.15.0 agregou foi o **`demonstrativo_realizado`** (a DRE linha a
+   linha, da hierarquia já classificada), não uma reclassificação.
 4. ✅ **Sync do Kondado RELIGADO (validado 2026-07-17):** o pipeline voltou a rodar — títulos/categorias
    com `last_updated` em 2026-06-23, OS/saldo em 2026-06-17 e o DRE em 2026-07-16 (antes estava parado
    em 2026-05-26). `coletas`, `centro_custo` e `caixa_hoje` refletem o último sync; seguir conferindo a

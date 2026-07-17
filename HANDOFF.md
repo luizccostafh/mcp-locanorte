@@ -53,7 +53,16 @@ Relação com o **Kondado** (decisão do usuário): o Kondado continua sendo a c
 
 ---
 
-## 3. server.py atual (v1.14.0 — no ar)
+## 3. server.py atual (v1.15.0 — no ar)
+
+> **v1.15.0 — `dre_resultado` ganha o DEMONSTRATIVO (DRE linha a linha):** `demonstrativo_realizado`
+> traz a DRE realizada por `descricaodre_n3` (ordenada pelo código), com subtotais por grupo n1 e o
+> Resultado Operacional — o P&L completo (como no Power BI), da hierarquia JÁ classificada da
+> `tabela_dre_omie` (sem casamento por nome, sem arquivo que envelhece). Validado com os 5 arquivos do
+> contador (categorias_atual, .pbix, modelo v23, FECHAMENTO_202606_V5, plano de contas): TODAS as
+> categorias não-classificadas são intencionalmente fora da DRE (empréstimos, PIS/COFINS s/ faturamento
+> = guias a recolher, adiantamentos, retenções, distribuição de lucros) → o Resultado Operacional
+> +591.420,03 já é o correto e um motor de classificação por categoria seria redundante.
 
 > **v1.14.0 — `dre_resultado` = RESULTADO OPERACIONAL correto:** soma só os grupos operacionais do DRE
 > (n1 (1) Lucro Bruto + (2) Despesas, via `KONDADO_DRE_N1_RESULTADO`) e EXCLUI (3) Investimentos/CAPEX
