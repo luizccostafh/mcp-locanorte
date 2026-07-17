@@ -44,7 +44,8 @@ Tools (8): status_locanorte, resumo_locanorte, faturamento, fluxo_caixa,
 > agora aponta para um **destino VIVO** com todas as tabelas reais — dá para amostrar os dados do servidor
 > por ele (antes caía no 39010 morto). Confirmado via `list_tables`/`run_query`: `tabela_dre_omie`
 > **populada** (1.371 linhas) e nova tabela curada `locanorte_kondado_mcp` (2.203 linhas, pagar+receber
-> unificados com `valor_dre` rateado por categoria). Ver seção 8, itens 3 e 8.
+> unificados com `valor_dre` rateado por categoria). ⚠️ Inspecionada em 2026-07-17: NÃO tem centro de
+> custo/`ncodcc` e a soma de `valor_dre` NÃO é o Resultado Operacional oficial — ver seção 8, item 8.
 
 Relação com o **Kondado** (decisão do usuário): o Kondado continua sendo a camada de
 **ETL/integração** (Omie → data warehouse → Power BI **e** este MCP). O MCP é a camada de
@@ -205,14 +206,18 @@ Teste feito chamando as tools pelo conector:
    Inclui **rotação periódica do `KONDADO_TOKEN`** — procedimento documentado na seção 10.
 6. **Custo** — avaliar downgrade Standard → Starter.
 7. **Substituição futura do Kondado** — internalizar o ETL quando houver condições.
-8. 🆕 **Consumir a `locanorte_kondado_mcp`** (nova tabela curada, 2.203 linhas) — unifica contas a
-   pagar + a receber já com `valor_dre` rateado por categoria (`tipo_lancamento`, `data_competencia`,
-   `codigo_categoria`, `percentual_categoria`, `valor_rateado`, `valor_dre`, `valor_documento`). É um
-   DRE pré-mastigado por lançamento: simplifica `dre_resultado`/`faturamento` (fonte única, já assinada)
-   e tende a destravar o CUSTO por centro de custo. PRÉ-REQUISITO: confirmar que a tabela existe no
-   destino **40059** lido via hub CSV (foi vista pelo `run_query` do conector MCP; falta confirmar no
-   hub CSV). Implementar como **fonte primária com fallback** para o modelo atual (manter degradação
-   graciosa). Ainda não confirmado: colunas de centro de custo/`ncodcc` nessa tabela.
+8. 🆕 **`locanorte_kondado_mcp` — INSPECIONADA (2026-07-17):** existe no destino **40059** (modelo
+   "Kondado MCP Fin Locanorte", ID 9926) → o `server.py` PODE lê-la via hub CSV. Unifica pagar+receber
+   por lançamento × categoria rateada; 13 colunas (`tipo_lancamento`, `codigo_lancamento_omie`,
+   `codigo_cliente_fornecedor`, `codigo_projeto`, `data_competencia`, `data_vencimento`, `status_titulo`,
+   `codigo_categoria`, `percentual_categoria`, `valor_rateado`, `valor_dre`, `valor_documento`).
+   ⚠️ **A inspeção derrubou as duas hipóteses:** (a) **NÃO tem centro de custo/`ncodcc`** (só
+   `codigo_projeto`) → não destrava o CUSTO do `centro_custo`; (b) somar `valor_dre` **NÃO é** o
+   Resultado Operacional oficial — jan–jun/2026 dá net **−33.416** (todos os títulos, inclui
+   não-operacionais) vs **+591.420** do `tabela_dre_omie`. Falta-lhe a classificação DRE. Como o DRE
+   oficial voltou (item 3), **NÃO** migrar `dre_resultado`/`faturamento` para esta tabela como primária.
+   Uso adequado: (i) tool nova aditiva de razão unificado por competência/categoria; ou (ii) fallback
+   melhorado do `_dre_resultado_titulos`. **Decisão de escopo pendente do usuário.**
 
 ---
 

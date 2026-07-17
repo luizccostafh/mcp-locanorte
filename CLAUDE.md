@@ -162,13 +162,24 @@ Substituição do Kondado fica para quando houver condições de internalizar o 
    Inclui rotação periódica do `KONDADO_TOKEN` → menu ☰ do destino Via Kondado → "Alterar token"
    → atualizar no Render → validar com as tools (procedimento completo em @HANDOFF.md, seção 10).
 6. Custo: avaliar baixar Render de **Standard** para **Starter** ($7/mês, também always-on).
-7. 🆕 **Evolução: consumir a `locanorte_kondado_mcp`** (tabela curada, unifica pagar+receber com
-   `valor_dre` rateado por categoria). Simplifica `dre_resultado`/`faturamento` (fonte única, já com
-   sinal e competência) e destrava o CUSTO do `centro_custo` (o rateio por centro de custo/categoria
-   fica no mesmo grão). PRÉ-REQUISITO: confirmar que essa tabela existe no destino **40059** que o
-   `server.py` lê via hub CSV (`KONDADO_TOKEN`) — foi vista pelo conector MCP `run_query`, falta
-   confirmar no hub CSV. Implementar como **fonte primária com fallback** para o modelo atual (manter
-   degradação graciosa). Ainda não confirmado: colunas exatas de centro de custo/`ncodcc` nessa tabela.
+7. 🆕 **`locanorte_kondado_mcp` — INSPECIONADA ao vivo (2026-07-17):** existe no destino **40059**
+   (modelo "Kondado MCP Fin Locanorte", ID 9926) → o `server.py` PODE lê-la via hub CSV. Grão =
+   1 lançamento × categoria rateada; 13 colunas: `tipo_lancamento` (PAGAR/RECEBER),
+   `codigo_lancamento_omie`, `codigo_cliente_fornecedor`, `codigo_projeto`, `data_competencia`,
+   `data_vencimento`, `status_titulo`, `codigo_categoria`, `percentual_categoria`, `valor_rateado`,
+   `valor_dre` (com sinal), `valor_documento`.
+   ⚠️ **A inspeção DERRUBOU as duas hipóteses anteriores:**
+   (a) **NÃO tem centro de custo/`ncodcc`** (só `codigo_projeto`) → **NÃO** destrava o CUSTO do
+       `centro_custo`.
+   (b) Somar `valor_dre` **NÃO reproduz o Resultado Operacional oficial**: jan–jun/2026 dá **net
+       −33.416** (todos os títulos por `data_competencia`, inclui não-operacionais/CAPEX) vs
+       **+591.420** do `tabela_dre_omie`. Falta-lhe a CLASSIFICAÇÃO DRE (Receita/Custo/Despesa),
+       que só existe na `tabela_dre_omie`.
+   ➡️ Como o **DRE oficial voltou** (item 3), a `tabela_dre_omie` continua sendo a fonte de
+   `dre_resultado`/`faturamento` — **NÃO** migrar para a `locanorte_kondado_mcp` como primária
+   (regrediria o número oficial). Uso adequado: (i) tool nova aditiva de **razão unificado
+   pagar+receber por competência/categoria/cliente**; ou (ii) fallback melhorado do
+   `_dre_resultado_titulos`. Decisão pendente do usuário.
 
 ## DESTINO KONDADO (atenção — erro já cometido)
 Histórico: havia dois destinos Via Kondado — **40059** (VIVO — é o que o `server.py` lê via
@@ -180,11 +191,12 @@ consolidadas no conector Omie **39483 → destino 40059**.
 > via hub CSV. Ou seja, dá para amostrar os dados de verdade por ele (antes o `run_query` caía no 39010
 > morto). Confirmado via `list_tables`/`run_query`: `tabela_dre_omie` **populada** (1.371 linhas) e uma
 > **nova tabela curada** `locanorte_kondado_mcp` (2.203 linhas, `last_updated` 2026-07-07). Essa tabela
-> unifica **contas a pagar + a receber** já com o **valor rateado por categoria e com sinal do DRE**
+> unifica **contas a pagar + a receber** já com o **valor rateado por categoria e com sinal**
 > (`tipo_lancamento`, `data_competencia`, `codigo_categoria`, `percentual_categoria`, `valor_rateado`,
-> `valor_dre`, `valor_documento`) — é praticamente um DRE pré-mastigado por lançamento. **Candidata a
-> fonte primária** de `dre_resultado`/`faturamento`/`centro_custo` numa evolução do `server.py`
-> (resolve o problema do centro de custo estar num rateio/filha). Ver PRÓXIMOS PASSOS.
+> `valor_dre`, `valor_documento`). ⚠️ **Inspecionada em 2026-07-17:** NÃO tem centro de custo/`ncodcc`
+> (só `codigo_projeto`) e a soma de `valor_dre` NÃO é o Resultado Operacional oficial (dá um net de
+> todos os títulos). Portanto **não substitui** o `tabela_dre_omie` nem destrava o `centro_custo` —
+> ver os detalhes e o uso adequado em PRÓXIMOS PASSOS, item 7.
 
 ## CONVENÇÕES
 - Idioma do projeto: PT-BR.
