@@ -369,3 +369,49 @@ A própria doc avisa: "Os tokens de acesso são diferentes dos tokens do Via Kon
 - Ver/obter token: `https://kondado.com.br/wiki/a/via-kondado#anchor-get-access-token`
 - Alterar (rotacionar) token: `https://kondado.com.br/wiki/a/via-kondado#anchor-change-token`
 - Recomendações de segurança: `https://kondado.com.br/wiki/a/via-kondado#anchor-security-recomendations`
+
+---
+
+## 11. Procedimento — Reautorizar o conector `MCP_KONDADO` numa segunda conta Claude
+
+> Diferente da seção 10 (rotação do `KONDADO_TOKEN`, que é a variável de ambiente do **Render**
+> usada pelo `server.py`). Isto aqui é sobre o **conector Kondado nativo** (`https://mcp.kondado.io/mcp`)
+> adicionado direto em **Configurações → Conectores** de uma conta Claude — cada conta autoriza
+> esse conector via OAuth de forma independente, então é comum uma conta ficar presa no destino
+> **39010 (morto, `SCHEMA_NOT_FOUND`, catálogo congelado em 26/05/2026)** enquanto outra já está
+> corretamente no **40059 (vivo)**. Isso **não tem relação** com o `server.py`/Render — o MCP próprio
+> da Locanorte usa `KONDADO_TOKEN` fixo do 40059 e não sofre esse problema.
+
+### Caso registrado (2026-07-17)
+- `luizfh@locanortecacambas.com.br` → conector no destino **40059**, confirmado vivo (53 tabelas,
+  `tabela_dre_omie` com 1.372 linhas, `last_updated` 2026-07-16).
+- `lcrcosta@hotmail.com` → conector preso no destino **39010** (morto), mesmo após uma tentativa
+  anterior de re-adicionar o conector — a etapa de login/autorização na Kondado não completou
+  (ou completou escolhendo o destino errado).
+
+### Diagnóstico (rodar `list_tables` do `MCP_KONDADO` na conta em dúvida)
+| Sinal | 40059 (vivo) | 39010 (morto) |
+|-------|--------------|----------------|
+| Nº de tabelas | ~51–53 | ~38 |
+| `tabela_dre_omie` | populada (~1.372 linhas), `last_updated` recente | erro **"Schema does not exist"** |
+| Catálogo | atualiza a cada sync | **congelado em 26/05/2026** |
+
+### Passo a passo (fazer NA CONTA presa no destino errado)
+1. Nessa conta Claude → **Configurações → Conectores**.
+2. Remover o(s) conector(es) **MCP Kondado** existente(s) — se houver mais de uma entrada de
+   Kondado na lista, remover todas para não sobrar a antiga apontando pro 39010.
+3. Adicionar de novo o conector: URL `https://mcp.kondado.io/mcp`.
+4. Completar o fluxo de **login/autorização OAuth da Kondado até o fim** — na tela que pede para
+   escolher o **destino/via**, selecionar explicitamente **40059**. Não fechar a aba nem assumir
+   que terminou antes de ver a confirmação de sucesso; é justamente uma autorização incompleta ou
+   com o destino errado pré-selecionado que causa a reincidência no 39010.
+5. Validar: nessa conta, pedir para o Claude chamar `list_tables` do `MCP_KONDADO` — deve retornar
+   ~51–53 tabelas sem erro. Se persistir "Schema does not exist" ou catálogo travado em 26/05,
+   repetir os passos 2–4 numa aba anônima/nova sessão (cache de autorização OAuth pode grudar).
+
+### Checklist
+- [ ] Conector(es) antigo(s) de Kondado removidos na conta afetada.
+- [ ] Conector `https://mcp.kondado.io/mcp` re-adicionado.
+- [ ] Fluxo de autorização OAuth concluído **selecionando o destino 40059**.
+- [ ] `list_tables` validado nessa conta (≥50 tabelas, sem erro de schema).
+- [ ] `tabela_dre_omie` com linhas e `last_updated` recente (não travado em 26/05).
