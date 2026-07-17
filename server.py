@@ -22,6 +22,13 @@
  Arquitetura: Omie (fonte) -> Kondado (ETL) -> [este MCP] -> Power BI / IA
  Princípio: DEGRADAÇÃO GRACIOSA EM CAMADAS (cada sub-bloco protegido isolado).
 ----------------------------------------------------------------------------
+ v1.16.0 — centro_custo DESTRAVADO: agora usa o RATEIO financeiro (tabelas-filhas
+   omie_lancamentos_contas_{pagar,receber}_distribuicao, coluna distribuicao_ccoddep +
+   distribuicao_nvaldep), juntando ao título-pai por codigo_lancamento_omie p/ excluir
+   CANCELADO e filtrar competência. NOME do centro de custo (caminhão) via omie_departamentos
+   (placas '2.x CAM-...'). Substitui a v1.12.0 (que buscava ncodcc no título — não existe lá,
+   e a receita das OS não era por caminhão). ⚠️ receita costuma vir rateada por OPERAÇÃO (4.x)
+   e custo por CAMINHÃO (2.x)/ÁREA — dimensões que podem não alinhar (aviso na saída).
  v1.15.0 — dre_resultado ganha o DEMONSTRATIVO: a DRE realizada linha a linha (por
    descricaodre_n3, ordenada pelo código), com subtotais por grupo n1 e o Resultado
    Operacional — o P&L completo, como no Power BI, a partir da hierarquia JÁ classificada
@@ -129,7 +136,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("mcp_locanorte")
 
 TZ = ZoneInfo("America/Sao_Paulo")
-CONTRATO_VERSAO = "1.15.0"
+CONTRATO_VERSAO = "1.16.0"
 
 mcp = FastMCP(
     "MCP Locanorte HTTP",
@@ -268,6 +275,28 @@ CC_COD_CAND  = ["ncodcc", "codigo", "codigo_centro_custo", "ccodcc", "coddepto",
                 "ccoddepto", "codigo_departamento"]
 CC_NOME_CAND = ["descricao", "nome", "cdescricao", "centro_custo", "nome_centro_custo",
                 "descricao_centro_custo", "nome_departamento", "descricao_departamento"]
+
+# --- (v1.16.0) RATEIO por centro de custo (departamento) — destrava o custo/receita por caminhão ---
+# No Omie o centro de custo do TÍTULO fica no rateio/distribuição (tabela-filha), não no título.
+# `distribuicao_ccoddep` casa com `omie_departamentos.codigo` (as placas aparecem como "2.x CAM-...").
+# `_centro_custo` (v1.16.0) usa RECEITA = rateio a receber e CUSTO = rateio a pagar (mesmo grão),
+# juntando à tabela-pai por `codigo_lancamento_omie` p/ status (exclui CANCELADO) e competência.
+TBL_PAGAR_DIST   = os.environ.get("KONDADO_TBL_PAGAR_DIST",   "omie_lancamentos_contas_pagar_distribuicao")
+TBL_RECEBER_DIST = os.environ.get("KONDADO_TBL_RECEBER_DIST", "omie_lancamentos_contas_receber_distribuicao")
+COL_DIST_LANC  = os.environ.get("KONDADO_COL_DIST_LANC",  "codigo_lancamento_omie")   # chave -> título-pai
+COL_DIST_CC    = os.environ.get("KONDADO_COL_DIST_CC",    "distribuicao_ccoddep")      # centro de custo
+COL_DIST_DESC  = os.environ.get("KONDADO_COL_DIST_DESC",  "distribuicao_cdesdep")      # nome do CC no rateio
+COL_DIST_VALOR = os.environ.get("KONDADO_COL_DIST_VALOR", "distribuicao_nvaldep")      # valor rateado
+COL_LANC_COD   = os.environ.get("KONDADO_COL_LANC_COD",   "codigo_lancamento_omie")    # chave na tabela-pai
+DIST_LANC_CAND  = ["codigo_lancamento_omie", "codigo_lancamento", "codigo"]
+DIST_CC_CAND    = ["distribuicao_ccoddep", "ccoddep", "codigo_departamento", "ncodcc"]
+DIST_DESC_CAND  = ["distribuicao_cdesdep", "cdesdep", "descricao_departamento", "descricao"]
+DIST_VALOR_CAND = ["distribuicao_nvaldep", "nvaldep", "valor_rateado", "valor"]
+TBL_DEPARTAMENTOS = os.environ.get("KONDADO_TBL_DEPARTAMENTOS", "omie_departamentos")
+COL_DEP_COD  = os.environ.get("KONDADO_COL_DEP_COD",  "codigo")
+COL_DEP_NOME = os.environ.get("KONDADO_COL_DEP_NOME", "descricao")
+DEP_COD_CAND  = ["codigo", "ccoddep", "ncodcc", "cod_departamento"]
+DEP_NOME_CAND = ["descricao", "nome", "cdescricao", "nome_departamento"]
 
 # --- (v1.13.0) Tabela curada UNIFICADA (tool lancamentos) — pagar+receber rateado por categoria ---
 # locanorte_kondado_mcp: 1 linha = lançamento × categoria rateada, com valor_dre já ASSINADO
@@ -1109,19 +1138,15 @@ def _coletas(competencia: str | None, limite: int) -> dict[str, Any]:
 # ----------------------------------------------------------------------------
 # 4.6) CENTRO DE CUSTO — rentabilidade por caminhão (receita OS x custo a pagar)
 # ----------------------------------------------------------------------------
-def _mapa_centro_custo() -> dict[str, str]:
-    """
-    (v1.12.0) De-para código do centro de custo -> NOME (caminhão). OPT-IN: só
-    busca se KONDADO_TBL_CC estiver definido. {} se não configurado/sem colunas.
-    """
-    if not TBL_CC:
-        return {}
-    rows = _fetch_csv(TBL_CC)
+def _mapa_departamentos() -> dict[str, str]:
+    """(v1.16.0) De-para {codigo departamento/centro de custo -> descricao} via omie_departamentos.
+    É a fonte do NOME do caminhão/centro de custo (as placas vêm como '2.x CAM-...'). {} se não der."""
+    rows = _fetch_csv(TBL_DEPARTAMENTOS)
     if not rows:
         return {}
     header = list(rows[0].keys())
-    col_cod  = _detecta_coluna(header, [COL_CC_COD, *CC_COD_CAND])
-    col_nome = _detecta_coluna(header, [COL_CC_NOME, *CC_NOME_CAND])
+    col_cod  = _detecta_coluna(header, [COL_DEP_COD, *DEP_COD_CAND])
+    col_nome = _detecta_coluna(header, [COL_DEP_NOME, *DEP_NOME_CAND])
     if not col_cod or not col_nome:
         return {}
     mapa: dict[str, str] = {}
@@ -1133,136 +1158,109 @@ def _mapa_centro_custo() -> dict[str, str]:
     return mapa
 
 
-def _receita_os_por_cc(competencia: str | None) -> dict[str, dict[str, Any]]:
+def _rateio_por_cc(tabela_dist: str, tabela_pai: str, competencia: str | None) -> dict[str, dict[str, Any]]:
     """
-    Receita por centro de custo a partir das Ordens de Serviço — MESMO critério do
-    `coletas`: exclui CANCELADA; competência pela previsão (fallback: inclusão).
-    Chave = informacoesadicionais_ncodcc normalizado.
+    (v1.16.0) Soma o valor RATEADO por centro de custo (departamento) a partir de uma
+    tabela-filha de distribuição (`*_distribuicao`), juntando ao TÍTULO-pai por
+    `codigo_lancamento_omie` para: (a) excluir CANCELADO (status do pai) e (b) filtrar a
+    competência (vencimento do pai). Chave = distribuicao_ccoddep. {cc: {valor, desc, qtd}}.
     """
-    rows = _fetch_csv(TBL_OS)
+    cancelados = _set_env(STATUS_CANCELADO)
+    # título-pai: codigo_lancamento_omie -> (status, competencia por vencimento)
+    pai: dict[str, tuple[str, str]] = {}
+    prows = _fetch_csv(tabela_pai)
+    if prows:
+        pcol = _detecta_coluna(list(prows[0].keys()), [COL_LANC_COD, *DIST_LANC_CAND])
+        for r in prows:
+            cod = _norm_cod(r.get(pcol)) if pcol else ""
+            if cod:
+                pai[cod] = (str(r.get(COL_STATUS, "") or "").strip().upper(),
+                            _competencia_de(r.get(COL_VENCIMENTO)))
     out: dict[str, dict[str, Any]] = {}
-    if not rows:
+    drows = _fetch_csv(tabela_dist)
+    if not drows:
         return out
-    h = list(rows[0].keys())
-    c_val  = _detecta_coluna(h, [COL_OS_VALOR, "cabecalho_nvalortotal", "nvalortotal"])
-    c_prev = _detecta_coluna(h, [COL_OS_DT_PREV, "cabecalho_ddtprevisao"])
-    c_inc  = _detecta_coluna(h, [COL_OS_DT_INC, "infocadastro_ddtinc"])
-    c_canc = _detecta_coluna(h, [COL_OS_CANC, "infocadastro_ccancelada"])
-    c_cc   = _detecta_coluna(h, [COL_OS_CC, "informacoesadicionais_ncodcc"])
-    for r in rows:
-        comp = _competencia_de(r.get(c_prev) if c_prev else None) \
-            or _competencia_de(r.get(c_inc) if c_inc else None)
+    h = list(drows[0].keys())
+    c_lanc  = _detecta_coluna(h, [COL_DIST_LANC, *DIST_LANC_CAND])
+    c_cc    = _detecta_coluna(h, [COL_DIST_CC, *DIST_CC_CAND])
+    c_desc  = _detecta_coluna(h, [COL_DIST_DESC, *DIST_DESC_CAND])
+    c_valor = _detecta_coluna(h, [COL_DIST_VALOR, *DIST_VALOR_CAND])
+    for d in drows:
+        cod = _norm_cod(d.get(c_lanc)) if c_lanc else ""
+        st, comp = pai.get(cod, ("", ""))
+        if st in cancelados:
+            continue
         if competencia and comp != competencia:
             continue
-        if c_canc and str(r.get(c_canc, "") or "").strip().upper().startswith("S"):
-            continue
-        cc = (_norm_cod(r.get(c_cc)) if c_cc else "") or "(sem centro de custo)"
-        v = _to_float(r.get(c_val)) if c_val else 0.0
-        a = out.setdefault(cc, {"receita": 0.0, "qtd_os": 0})
-        a["receita"] += v
-        a["qtd_os"] += 1
+        cc = (_norm_cod(d.get(c_cc)) if c_cc else "") or "(sem centro de custo)"
+        v = _to_float(d.get(c_valor)) if c_valor else 0.0
+        a = out.setdefault(cc, {"valor": 0.0, "desc": (str(d.get(c_desc, "") or "").strip() if c_desc else "") or cc, "qtd": 0})
+        a["valor"] += v
+        a["qtd"] += 1
     return out
-
-
-def _custo_pagar_por_cc(competencia: str | None
-                        ) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None, str | None]:
-    """
-    Custo por centro de custo a partir das contas a pagar (exclui CANCELADO;
-    competência por vencimento). Coluna de centro de custo auto-detectada.
-    Retorna (mapa, diagnostico, coluna_detectada): diagnostico=None em sucesso;
-    quando não acha a coluna de centro de custo, devolve ({}, diag, None) com as
-    colunas disponíveis — degradação graciosa (a receita por CC ainda é entregue).
-    """
-    rows = _fetch_csv(TBL_PAGAR)
-    if not rows:
-        return {}, {"status": "indisponivel", "erro": f"{TBL_PAGAR} sem linhas."}, None
-    header = list(rows[0].keys())
-    col_cc = _detecta_coluna(header, [COL_PAGAR_CC, *PAGAR_CC_CAND])
-    if not col_cc:
-        return {}, {
-            "status": "indisponivel",
-            "erro": f"não encontrei a coluna de centro de custo em {TBL_PAGAR}.",
-            "colunas_disponiveis": header,
-            "dica": ("defina KONDADO_COL_PAGAR_CC com o nome certo. Se no Omie o centro de custo "
-                     "do título estiver num rateio/distribuição (tabela-filha), me avise para fazer "
-                     "o join pela filha (ex.: omie_lancamentos_contas_pagar_departamentos)."),
-        }, None
-    cancelados = _set_env(STATUS_CANCELADO)
-    out: dict[str, dict[str, Any]] = {}
-    for r in rows:
-        if str(r.get(COL_STATUS, "") or "").strip().upper() in cancelados:
-            continue
-        if competencia and _competencia_de(r.get(COL_VENCIMENTO)) != competencia:
-            continue
-        cc = _norm_cod(r.get(col_cc)) or "(sem centro de custo)"
-        v = _to_float(r.get(COL_VALOR_DOC))
-        a = out.setdefault(cc, {"custo": 0.0, "qtd_titulos": 0})
-        a["custo"] += v
-        a["qtd_titulos"] += 1
-    return out, None, col_cc
 
 
 def _centro_custo(competencia: str | None, limite: int) -> dict[str, Any]:
     """
-    (v1.12.0) Rentabilidade por centro de custo (caminhão): receita das OS (por
-    ncodcc) − custo das contas a pagar do mesmo centro de custo. União das chaves
-    dos dois lados (um CC só em um lado fica visível com o outro lado zerado —
-    expõe eventual divergência de código entre OS e contas a pagar).
+    (v1.16.0) Rentabilidade por CENTRO DE CUSTO (caminhão/área): RECEITA (rateio a receber)
+    − CUSTO (rateio a pagar) no MESMO grão de centro de custo (distribuicao_ccoddep), com o
+    NOME resolvido via omie_departamentos. Exclui CANCELADO (status do título-pai);
+    competência pelo vencimento do pai. Ranqueada por rentabilidade, com `totais`.
+
+    ⚠️ No Omie a RECEITA costuma ser rateada por OPERAÇÃO (4.x) e o CUSTO por CAMINHÃO (2.x)/
+    ÁREA — dimensões que podem não se alinhar. A rentabilidade por CC reflete o que o rateio
+    do Omie atribui a cada centro de custo; para margem por caminhão/serviço, alinhar o rateio
+    no Omie (ver aviso na saída).
     """
-    receita = _receita_os_por_cc(competencia)
-    custo, diag, col_cc = _custo_pagar_por_cc(competencia)
-    nomes = _safe_map("mapa_centro_custo", _mapa_centro_custo)
+    receita = _rateio_por_cc(TBL_RECEBER_DIST, TBL_RECEBER, competencia)
+    custo   = _rateio_por_cc(TBL_PAGAR_DIST,   TBL_PAGAR,   competencia)
+    nomes   = _safe_map("mapa_departamentos", _mapa_departamentos)
 
     chaves = set(receita) | set(custo)
     linhas: list[dict[str, Any]] = []
     tot_rec = tot_cus = 0.0
     for cc in chaves:
-        rec = round(receita.get(cc, {}).get("receita", 0.0), 2)
-        item: dict[str, Any] = {"centro_custo": cc}
-        if nomes:
-            item["nome"] = nomes.get(cc) or cc
-        item["receita_os"] = rec
-        item["qtd_os"] = receita.get(cc, {}).get("qtd_os", 0)
+        rec = round(receita.get(cc, {}).get("valor", 0.0), 2)
+        cus = round(custo.get(cc, {}).get("valor", 0.0), 2)
+        nome = (nomes.get(cc)
+                or receita.get(cc, {}).get("desc")
+                or custo.get(cc, {}).get("desc") or cc)
         tot_rec += rec
-        if diag is None:
-            cus = round(custo.get(cc, {}).get("custo", 0.0), 2)
-            tot_cus += cus
-            item["custo_pagar"] = cus
-            item["qtd_titulos_pagar"] = custo.get(cc, {}).get("qtd_titulos", 0)
-            item["rentabilidade"] = round(rec - cus, 2)
-            item["margem_pct"] = round((rec - cus) / rec * 100, 1) if rec > 0 else None
-        linhas.append(item)
+        tot_cus += cus
+        linhas.append({
+            "centro_custo": cc,
+            "nome": nome,
+            "receita": rec,
+            "custo": cus,
+            "rentabilidade": round(rec - cus, 2),
+            "margem_pct": round((rec - cus) / rec * 100, 1) if rec > 0 else None,
+            "qtd_receber": receita.get(cc, {}).get("qtd", 0),
+            "qtd_pagar": custo.get(cc, {}).get("qtd", 0),
+        })
 
-    chave_ord = "rentabilidade" if diag is None else "receita_os"
-    linhas.sort(key=lambda x: x.get(chave_ord, 0.0), reverse=True)
+    linhas.sort(key=lambda x: x["rentabilidade"], reverse=True)
     if limite and limite > 0:
         linhas = linhas[:limite]
 
-    out: dict[str, Any] = {
+    return {
         "status": "ok",
-        "escopo": competencia or "todas as competências",
-        "criterio": ("receita = soma das OS (cabecalho_nvalortotal) por informacoesadicionais_ncodcc "
-                     "(exclui CANCELADA, competência por previsão); custo = soma de valor_documento "
-                     "das contas a pagar por centro de custo (exclui CANCELADO, competência por vencimento)."),
-        "fonte_nome_centro_custo": "configurado (KONDADO_TBL_CC)" if nomes
-                                   else "código (defina KONDADO_TBL_CC p/ exibir o nome do caminhão)",
+        "escopo": competencia or "todas as competências (acumulado)",
+        "fonte": f"rateio financeiro: {TBL_RECEBER_DIST} (receita) x {TBL_PAGAR_DIST} (custo)",
+        "criterio": ("receita = soma de distribuicao_nvaldep do rateio a RECEBER; custo = idem a PAGAR; "
+                     "por centro de custo (distribuicao_ccoddep); exclui CANCELADO (status do título-pai); "
+                     "competência pelo vencimento do título-pai."),
+        "fonte_nome_centro_custo": "omie_departamentos" if nomes else "descrição do rateio",
+        "aviso": ("A receita costuma ser rateada por OPERAÇÃO (4.x) e o custo por CAMINHÃO (2.x)/ÁREA — "
+                  "dimensões que podem não se alinhar. Para margem por caminhão/serviço, alinhar o rateio no Omie."),
         "qtd_centros_custo": len(chaves),
-        "centros_custo": linhas,
-    }
-    if diag is None:
-        out["custo_coluna_detectada"] = col_cc
-        out["totais"] = {
-            "receita_os": round(tot_rec, 2),
-            "custo_pagar": round(tot_cus, 2),
+        "totais": {
+            "receita": round(tot_rec, 2),
+            "custo": round(tot_cus, 2),
             "rentabilidade": round(tot_rec - tot_cus, 2),
             "margem_pct": round((tot_rec - tot_cus) / tot_rec * 100, 1) if tot_rec > 0 else None,
-        }
-    else:
-        out["custo"] = diag
-        out["observacao"] = ("Receita por centro de custo OK; CUSTO indisponível até identificar a coluna "
-                             "de centro de custo nas contas a pagar (veja custo.colunas_disponiveis e "
-                             "configure KONDADO_COL_PAGAR_CC).")
-    return out
+        },
+        "centros_custo": linhas,
+    }
 
 
 # ----------------------------------------------------------------------------
@@ -1590,16 +1588,16 @@ def coletas(competencia: str | None = None, limite: int = 10) -> dict:
 @mcp.tool()
 def centro_custo(competencia: str | None = None, limite: int = 10) -> dict:
     """
-    Rentabilidade por CENTRO DE CUSTO (caminhão): cruza a RECEITA das Ordens de
-    Serviço (por informacoesadicionais_ncodcc) com o CUSTO das contas a pagar do
-    mesmo centro de custo. Ranking por rentabilidade (receita − custo).
-    - competencia: 'AAAA-MM' (vazio = todas). Receita filtra pela previsão da OS;
-      custo filtra pelo vencimento do título.
+    (v1.16.0) Rentabilidade por CENTRO DE CUSTO (caminhão/área): RECEITA (rateio a
+    receber) − CUSTO (rateio a pagar) no MESMO grão de centro de custo
+    (distribuicao_ccoddep), com o NOME do caminhão via omie_departamentos. Exclui
+    CANCELADO (status do título-pai); competência pelo vencimento do pai. Ranking por
+    rentabilidade, com `totais`.
+    - competencia: 'AAAA-MM' (vazio = acumulado).
     - limite: tamanho do ranking (default 10; mínimo 1).
-    Se a coluna de centro de custo das contas a pagar não for encontrada, o bloco
-    `custo` volta 'indisponivel' com as colunas disponíveis (configure
-    KONDADO_COL_PAGAR_CC) — a receita por centro de custo ainda é entregue.
-    Para exibir o NOME do caminhão em vez do código, defina KONDADO_TBL_CC.
+    ⚠️ A receita costuma vir rateada por OPERAÇÃO (4.x) e o custo por CAMINHÃO (2.x)/ÁREA
+    — dimensões que podem não alinhar; para margem por caminhão/serviço, alinhar o rateio
+    no Omie (o campo `aviso` sinaliza isso).
     """
     try:
         comp = _valida_competencia(competencia)
