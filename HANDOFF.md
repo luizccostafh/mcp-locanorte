@@ -38,9 +38,13 @@ Tools (8): status_locanorte, resumo_locanorte, faturamento, fluxo_caixa,
 ```
 
 **Destinos Via Kondado:** **40059** = VIVO (o `server.py` lê via `KONDADO_TOKEN`);
-**39010** = MORTO (`SCHEMA_NOT_FOUND`). O MCP nativo do Kondado (`run_query`) aponta para o 39010
-— não serve p/ amostrar os dados do servidor; use o hub CSV (40059). Integrações no conector Omie
-**39483 → destino 40059**.
+**39010** = MORTO (`SCHEMA_NOT_FOUND`). Integrações no conector Omie **39483 → destino 40059**.
+
+> **Atualização 2026-07-17:** o conector **MCP do Kondado** (`run_query` KSQL) disponível no Claude Code
+> agora aponta para um **destino VIVO** com todas as tabelas reais — dá para amostrar os dados do servidor
+> por ele (antes caía no 39010 morto). Confirmado via `list_tables`/`run_query`: `tabela_dre_omie`
+> **populada** (1.371 linhas) e nova tabela curada `locanorte_kondado_mcp` (2.203 linhas, pagar+receber
+> unificados com `valor_dre` rateado por categoria). Ver seção 8, itens 3 e 8.
 
 Relação com o **Kondado** (decisão do usuário): o Kondado continua sendo a camada de
 **ETL/integração** (Omie → data warehouse → Power BI **e** este MCP). O MCP é a camada de
@@ -181,15 +185,19 @@ Teste feito chamando as tools pelo conector:
 2. ✅ **Tools operacionais/financeiras** — `fluxo_caixa` (v1.5.0), `faturamento` (v1.6.0),
    `dre_resultado` (v1.7.0), `top_clientes` (v1.8.0), `coletas` (v1.11.0) e `centro_custo` (v1.12.0 —
    rentabilidade por caminhão) entregues e validados. A seguir: detalhe de uma OS, clientes por
-   tag/característica. Atenção: `coletas`, `centro_custo` e `caixa_hoje` refletem o ÚLTIMO sync
-   (tabelas operacionais com `last_updated` em 2026-05-26) — conferir a cadência do pipeline.
-   ✅ Bug do `caixa_hoje.data_saldo_base` voltar no futuro: corrigido na v1.11.1 (ignora saldo de data
-   futura). ⚠️ `centro_custo`: confirmar onde o Omie/Kondado guardam o centro de custo nas contas a pagar
-   (pode estar num rateio/filha) — se `custo` voltar `indisponivel`, apontar `KONDADO_COL_PAGAR_CC` ou
-   adicionar o join pela filha numa v1.12.1.
-3. ⚠️ **DRE oficial** — a `tabela_dre_omie` (kubo) está VAZIA no 40059; por isso `faturamento` cai
-   p/ NFS-e e `dre_resultado` cai p/ aproximação por títulos. Reconstruir a transformação destrava
-   o Resultado Operacional oficial (jan–jun ≈ +629 mil, ver a referência DAX).
+   tag/característica. ✅ **Sync RELIGADO (2026-07-17):** o pipeline voltou a rodar — títulos/categorias
+   em 2026-06-23, OS/saldo em 2026-06-17, DRE em 2026-07-16 (antes parado em 2026-05-26); `coletas`,
+   `centro_custo` e `caixa_hoje` refletem o último sync. ✅ Bug do `caixa_hoje.data_saldo_base` voltar
+   no futuro: corrigido na v1.11.1. ⚠️ `centro_custo`: confirmar onde o Omie/Kondado guardam o centro de
+   custo nas contas a pagar (pode estar num rateio/filha) — se `custo` voltar `indisponivel`, apontar
+   `KONDADO_COL_PAGAR_CC` ou adicionar o join pela filha numa v1.12.1 (a `locanorte_kondado_mcp` já traz
+   isso rateado — ver item 8).
+3. ✅ **DRE oficial DESTRAVADO (validado 2026-07-17)** — a `tabela_dre_omie` voltou a ter dados (1.371
+   linhas, `last_updated` 2026-07-16). `faturamento` e `dre_resultado` usam o DRE oficial, não mais os
+   fallbacks. Conferido jan–jun/2026: Receita Líquida R$ 1.982.578,58; Lucro Bruto 1.045.100,91;
+   **Resultado Operacional +R$ 591.420,03** (após CAPEX +510.909,97) — no patamar dos ~629 mil da
+   referência DAX (gap = base de data `data_emissao` vs competência). ⚠️ Restam R$ 302.001,40 de
+   lançamentos SEM classificação no DRE (`niveldre`/`totalizadre` vazios) — categorias a mapear no Omie.
 4. ✅ **Parâmetros tipados** — entregue na v1.6.0 (`competencia`/`ano`/`limite`).
 5. **Governança / segurança** — religar `enable_dns_rebinding_protection=True` com allowlist
    (`allowed_hosts=["mcp-locanorte.onrender.com", "mcp-locanorte.onrender.com:*"]`,
@@ -197,6 +205,14 @@ Teste feito chamando as tools pelo conector:
    Inclui **rotação periódica do `KONDADO_TOKEN`** — procedimento documentado na seção 10.
 6. **Custo** — avaliar downgrade Standard → Starter.
 7. **Substituição futura do Kondado** — internalizar o ETL quando houver condições.
+8. 🆕 **Consumir a `locanorte_kondado_mcp`** (nova tabela curada, 2.203 linhas) — unifica contas a
+   pagar + a receber já com `valor_dre` rateado por categoria (`tipo_lancamento`, `data_competencia`,
+   `codigo_categoria`, `percentual_categoria`, `valor_rateado`, `valor_dre`, `valor_documento`). É um
+   DRE pré-mastigado por lançamento: simplifica `dre_resultado`/`faturamento` (fonte única, já assinada)
+   e tende a destravar o CUSTO por centro de custo. PRÉ-REQUISITO: confirmar que a tabela existe no
+   destino **40059** lido via hub CSV (foi vista pelo `run_query` do conector MCP; falta confirmar no
+   hub CSV). Implementar como **fonte primária com fallback** para o modelo atual (manter degradação
+   graciosa). Ainda não confirmado: colunas de centro de custo/`ncodcc` nessa tabela.
 
 ---
 

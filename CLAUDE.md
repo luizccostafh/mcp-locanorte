@@ -141,25 +141,50 @@ Substituição do Kondado fica para quando houver condições de internalizar o 
    o centro de custo costuma vir num rateio/distribuição/filha). Na 1ª execução, se `custo` voltar
    `indisponivel`, usar o `colunas_disponiveis` p/ apontar `KONDADO_COL_PAGAR_CC` — ou adicionar o join
    pela filha (ex.: `omie_lancamentos_contas_pagar_departamentos`) numa v1.12.1.
-3. ⚠️ **DRE oficial**: a `tabela_dre_omie` (transformação "kubo") está VAZIA no destino 40059 — por isso
-   `faturamento` cai p/ NFS-e e `dre_resultado` cai p/ aproximação por títulos. Reconstruir essa
-   transformação no Kondado destrava o Resultado Operacional oficial (jan–jun ≈ +629 mil, ver DAX).
-4. ⚠️ **Sync do Kondado**: tabelas operacionais com `last_updated` em 2026-05-26 (cadência/parada do
-   pipeline). `coletas`, `centro_custo` e `caixa_hoje` refletem esse corte — conferir a cadência do sync.
-   ✅ O bug de `caixa_hoje.data_saldo_base` voltar com data FUTURA foi corrigido na v1.11.1 (ignora linhas
-   de saldo com data futura); com isso o `data_saldo_base` passa a refletir o último saldo real (≈ 26/05
-   enquanto o sync estiver parado). O frescor em si depende de religar o sync — ação no Kondado, não no código.
+3. ✅ **DRE oficial DESTRAVADO (validado 2026-07-17 via conector MCP Kondado):** a `tabela_dre_omie`
+   voltou a ter dados (**1.371 linhas**, `last_updated` 2026-07-16). Logo, `faturamento` e `dre_resultado`
+   agora usam o **DRE oficial** — não mais os fallbacks NFS-e/títulos. A Receita está classificada
+   (`(1.01) Receita Liquida Operacional → (1.01.01) Receita Bruta de Vendas`), então o `_faturamento_mes`
+   (marcador "Receita") funciona via DRE. Números conferidos jan–jun/2026:
+   - Receita Líquida Operacional = **R$ 1.982.578,58** (Bruta 1.987.259,20 − Deduções 4.680,62)
+   - Custo dos Serviços = −937.477,67 → **Lucro Bruto = 1.045.100,91**
+   - Despesas = −453.680,88 → **Resultado Operacional = +R$ 591.420,03**
+   - Investimentos (CAPEX) = −80.510,06 → após investimentos = +510.909,97
+   - No patamar dos **~629 mil** da referência DAX (gap = base de data `data_emissao` vs competência).
+   ⚠️ Restam **R$ 302.001,40** de lançamentos SEM classificação no DRE (`niveldre`/`totalizadre` vazios):
+   categorias ainda não mapeadas na estrutura do DRE no Omie — mapear para o resultado oficial fechar 100%.
+4. ✅ **Sync do Kondado RELIGADO (validado 2026-07-17):** o pipeline voltou a rodar — títulos/categorias
+   com `last_updated` em 2026-06-23, OS/saldo em 2026-06-17 e o DRE em 2026-07-16 (antes estava parado
+   em 2026-05-26). `coletas`, `centro_custo` e `caixa_hoje` refletem o último sync; seguir conferindo a
+   cadência do pipeline. ✅ O bug de `caixa_hoje.data_saldo_base` voltar com data FUTURA já estava
+   corrigido na v1.11.1 (ignora linhas de saldo com data futura).
 5. Governança: religar `enable_dns_rebinding_protection=True` com allowlist do domínio + auth por token.
    Inclui rotação periódica do `KONDADO_TOKEN` → menu ☰ do destino Via Kondado → "Alterar token"
    → atualizar no Render → validar com as tools (procedimento completo em @HANDOFF.md, seção 10).
 6. Custo: avaliar baixar Render de **Standard** para **Starter** ($7/mês, também always-on).
+7. 🆕 **Evolução: consumir a `locanorte_kondado_mcp`** (tabela curada, unifica pagar+receber com
+   `valor_dre` rateado por categoria). Simplifica `dre_resultado`/`faturamento` (fonte única, já com
+   sinal e competência) e destrava o CUSTO do `centro_custo` (o rateio por centro de custo/categoria
+   fica no mesmo grão). PRÉ-REQUISITO: confirmar que essa tabela existe no destino **40059** que o
+   `server.py` lê via hub CSV (`KONDADO_TOKEN`) — foi vista pelo conector MCP `run_query`, falta
+   confirmar no hub CSV. Implementar como **fonte primária com fallback** para o modelo atual (manter
+   degradação graciosa). Ainda não confirmado: colunas exatas de centro de custo/`ncodcc` nessa tabela.
 
 ## DESTINO KONDADO (atenção — erro já cometido)
-Há dois destinos Via Kondado: **40059** (VIVO — é o que o `server.py` lê via `KONDADO_TOKEN`) e
-**39010** (MORTO — `SCHEMA_NOT_FOUND`). O conector **MCP nativo do Kondado** (`run_query`) aponta
-para o 39010 → não serve para amostrar os dados que o servidor usa. Para inspecionar os dados reais,
-use o hub CSV (40059) que o próprio servidor consome. As integrações financeiras foram consolidadas
-no conector Omie **39483 → destino 40059**.
+Histórico: havia dois destinos Via Kondado — **40059** (VIVO — é o que o `server.py` lê via
+`KONDADO_TOKEN`) e **39010** (MORTO — `SCHEMA_NOT_FOUND`). As integrações financeiras foram
+consolidadas no conector Omie **39483 → destino 40059**.
+
+> **Atualização 2026-07-17:** o conector **MCP do Kondado** (`run_query` KSQL) disponível no Claude Code
+> agora aponta para um **destino VIVO** com TODAS as tabelas reais — as mesmas que o `server.py` consome
+> via hub CSV. Ou seja, dá para amostrar os dados de verdade por ele (antes o `run_query` caía no 39010
+> morto). Confirmado via `list_tables`/`run_query`: `tabela_dre_omie` **populada** (1.371 linhas) e uma
+> **nova tabela curada** `locanorte_kondado_mcp` (2.203 linhas, `last_updated` 2026-07-07). Essa tabela
+> unifica **contas a pagar + a receber** já com o **valor rateado por categoria e com sinal do DRE**
+> (`tipo_lancamento`, `data_competencia`, `codigo_categoria`, `percentual_categoria`, `valor_rateado`,
+> `valor_dre`, `valor_documento`) — é praticamente um DRE pré-mastigado por lançamento. **Candidata a
+> fonte primária** de `dre_resultado`/`faturamento`/`centro_custo` numa evolução do `server.py`
+> (resolve o problema do centro de custo estar num rateio/filha). Ver PRÓXIMOS PASSOS.
 
 ## CONVENÇÕES
 - Idioma do projeto: PT-BR.
