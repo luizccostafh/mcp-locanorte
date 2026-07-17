@@ -15,7 +15,7 @@ dados operacionais (caçambas, coletas, clientes) e governança.
 - HTTP client: **httpx** (consome o hub do Kondado em CSV)
 - Repositório: GitHub `luizccostafh/mcp-locanorte`, branch `main`
 - Hospedagem: **Render** (Web Service, plano **Standard**, always-on)
-- Arquivo principal: `server.py` (contrato **v1.13.0**)
+- Arquivo principal: `server.py` (contrato **v1.14.0**)
 
 ## COMO (rodar / deploy)
 - Build Command (Render): `pip install -r requirements.txt`
@@ -42,6 +42,7 @@ depois do fix `follow_redirects=True` (ver Regra de Ouro nº6).
 | `KONDADO_STATUS_CANCELADO` | não | `CANCELADO` | status excluídos do total |
 | `KONDADO_DRE_NIVEIS` | não | `descricaodre_n1…n6` | níveis do DRE varridos p/ achar receita |
 | `KONDADO_DRE_RECEITA_MARCADOR` | não | `Receita` | marcador da Receita Líquida Operacional |
+| `KONDADO_DRE_N1_RESULTADO` | não | `1,2` | grupos n1 do DRE que compõem o Resultado Operacional ((1)+(2)); exclui (3) CAPEX e não-classificados |
 | `KONDADO_DRE_COMPETENCIA` | não | mês corrente | forçar competência YYYY-MM |
 | `KONDADO_COL_VENCIMENTO` | não | `data_vencimento` | coluna de vencimento (janelas do `fluxo_caixa`) |
 | `KONDADO_TBL_SALDO` | não | `omie_saldo_conta_corrente` | tabela de saldo de contas correntes (`fluxo_caixa`) |
@@ -84,7 +85,7 @@ depois do fix `follow_redirects=True` (ver Regra de Ouro nº6).
    então o 302 estoura em `raise_for_status()` e todo o financeiro vira "indisponível".
    Correção: criar o client com `httpx.Client(..., follow_redirects=True)` em `_fetch_csv`.
 
-## TOOLS ATUAIS (v1.13.0 — dados reais, retornam dict/JSON) — 9 tools
+## TOOLS ATUAIS (v1.14.0 — dados reais, retornam dict/JSON) — 9 tools
 - `status_locanorte()` → health-check estruturado: serviço, status, transporte,
   `contrato_versao`, `kondado_configurado` (bool), `data_referencia` (TZ America/Sao_Paulo).
 - `resumo_locanorte(competencia?)` → resumo gerencial: base cadastral (sempre) + bloco `financeiro`
@@ -98,10 +99,14 @@ depois do fix `follow_redirects=True` (ver Regra de Ouro nº6).
   Projeção **conservadora**: paga o vencido, não conta recebível vencido como entrada.
   **(v1.11.1)** `_caixa_hoje` ignora linhas de saldo com data FUTURA (a tabela é série diária com dias
   projetados); só considera `data_saldo <= hoje` e expõe `linhas_futuras_ignoradas`.
-- `dre_resultado(ano?, competencia?)` → **(v1.7.0/v1.10.0)** Resultado Operacional separando
-  REALIZADO x PROJETADO. Fonte primária = DRE; se a `tabela_dre_omie` estiver vazia, **fallback por
-  TÍTULOS** (contas a receber − contas a pagar por competência) rotulado como **APROXIMAÇÃO**
-  (inclui não-operacionais; o oficial exige reconstruir a `tabela_dre_omie`).
+- `dre_resultado(ano?, competencia?)` → **(v1.7.0/v1.10.0/v1.14.0)** **RESULTADO OPERACIONAL** do DRE,
+  REALIZADO x PROJETADO. **(v1.14.0)** soma só os grupos operacionais do DRE (n1 (1) Lucro Bruto +
+  (2) Despesas, via `KONDADO_DRE_N1_RESULTADO`) e **EXCLUI** (3) Investimentos/CAPEX e os lançamentos
+  SEM classificação no DRE (não-operacionais: distribuição de lucros, transferência entre contas,
+  retenções/guias descontadas em folha), reportando-os à parte em `excluidos`. Alinhado à DRE gerencial
+  do Power BI (`GER Resultado Liquido` = EBIT + Res. Financeiro; CAPEX/empréstimos só no DFC). jan–jun/2026:
+  **+R$ 591.420,03** (excluídos: CAPEX −80.510,06 e não-classificado +302.001,40). Fonte primária = DRE;
+  se a `tabela_dre_omie` estiver vazia, **fallback por TÍTULOS** rotulado como **APROXIMAÇÃO**.
 - `top_clientes(limite=10)` → **(v1.8.0/v1.10.0)** maiores clientes por contas a receber
   (`valor_total` + `valor_em_aberto`), com o **NOME** resolvido via `omie_clientes` (`fonte_nome`).
 - `coletas(competencia?, limite=10)` → **(v1.11.0)** operação via Ordens de Serviço (cada OS = uma
@@ -161,6 +166,15 @@ Substituição do Kondado fica para quando houver condições de internalizar o 
    - No patamar dos **~629 mil** da referência DAX (gap = base de data `data_emissao` vs competência).
    ⚠️ Restam **R$ 302.001,40** de lançamentos SEM classificação no DRE (`niveldre`/`totalizadre` vazios):
    categorias ainda não mapeadas na estrutura do DRE no Omie — mapear para o resultado oficial fechar 100%.
+   ✅ **(v1.14.0) TRATADO NO CÓDIGO:** o `dre_resultado` passou a somar SÓ os grupos operacionais
+   (n1 (1)+(2)) e a reportar (3) CAPEX e o não-classificado à parte em `excluidos` → o headline já é o
+   **Resultado Operacional correto (+591.420,03)**, não mais a soma bruta que misturava tudo (+812.911).
+   Regra confirmada pela DRE gerencial do Power BI (`.pbix`: `GER Resultado Liquido` = EBIT + Res.
+   Financeiro; CAPEX/empréstimos só no DFC) e pelo modelo de categorias v23 (guias/retenções descontadas
+   em folha = "baixa de passivo — fora da DRE"). ➡️ **Ação do lado do Omie (contador):** importar o
+   **`MODELO_IMPORTAR_OMIE_PLANO_CONTAS_e_CATEGORIAS_v23`** (Painel do Contador → Importar → Plano de
+   Contas; e Categorias x Plano Contábil) para mapear as categorias restantes → depois do próximo sync,
+   o `nao_classificado_dre` tende a zerar e o oficial fecha 100%.
 4. ✅ **Sync do Kondado RELIGADO (validado 2026-07-17):** o pipeline voltou a rodar — títulos/categorias
    com `last_updated` em 2026-06-23, OS/saldo em 2026-06-17 e o DRE em 2026-07-16 (antes estava parado
    em 2026-05-26). `coletas`, `centro_custo` e `caixa_hoje` refletem o último sync; seguir conferindo a

@@ -53,7 +53,16 @@ Relação com o **Kondado** (decisão do usuário): o Kondado continua sendo a c
 
 ---
 
-## 3. server.py atual (v1.13.0 — no ar)
+## 3. server.py atual (v1.14.0 — no ar)
+
+> **v1.14.0 — `dre_resultado` = RESULTADO OPERACIONAL correto:** soma só os grupos operacionais do DRE
+> (n1 (1) Lucro Bruto + (2) Despesas, via `KONDADO_DRE_N1_RESULTADO`) e EXCLUI (3) Investimentos/CAPEX
+> e os lançamentos SEM classificação no DRE (não-operacionais: distribuição de lucros, transferência
+> entre contas, retenções/guias descontadas em folha), reportados à parte em `excluidos`. Antes somava
+> TUDO (misturava CAPEX/não-operacionais). Alinhado à DRE gerencial do Power BI (`GER Resultado Liquido`
+> = EBIT + Res. Financeiro; CAPEX/empréstimos só no DFC) e ao modelo de categorias v23. jan–jun/2026:
+> **+R$ 591.420,03** (excluídos: CAPEX −80.510,06 e não-classificado +302.001,40). Para o oficial fechar
+> 100%: importar no Omie o modelo de plano de contas/categorias v23 (mapeia as categorias restantes).
 
 > **v1.13.0 — NOVA TOOL `lancamentos`:** razão UNIFICADO de contas a pagar + a receber a partir da
 > tabela curada `locanorte_kondado_mcp` (1 linha = lançamento × categoria rateada; `valor_dre` já

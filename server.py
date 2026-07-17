@@ -22,6 +22,15 @@
  Arquitetura: Omie (fonte) -> Kondado (ETL) -> [este MCP] -> Power BI / IA
  Princípio: DEGRADAÇÃO GRACIOSA EM CAMADAS (cada sub-bloco protegido isolado).
 ----------------------------------------------------------------------------
+ v1.14.0 — dre_resultado agora entrega o RESULTADO OPERACIONAL correto: soma só os grupos
+   operacionais do DRE (n1 (1) Lucro Bruto + (2) Despesas, via KONDADO_DRE_N1_RESULTADO) e
+   EXCLUI (3) Investimentos/CAPEX e os lançamentos SEM classificação no DRE (não-operacionais:
+   distribuição de lucros, transferência entre contas, retenções/guias descontadas em folha),
+   reportando-os à parte em `excluidos`. Antes somava TUDO (misturava CAPEX/não-operacionais).
+   Alinhado à DRE gerencial do Power BI (medida "GER Resultado Liquido" = EBIT + Res. Financeiro,
+   CAPEX/empréstimos só no DFC) e ao modelo de categorias v23. Validado jan–jun/2026:
+   Resultado Operacional = +R$ 591.420,03 (excluídos: CAPEX −80.510,06 e não-classificado
+   +302.001,40). faturamento/lancamentos inalterados.
  v1.13.0 — NOVA TOOL lancamentos: razão UNIFICADO de contas a pagar + a receber a partir
    da tabela curada `locanorte_kondado_mcp` (1 linha = lançamento × categoria rateada, com
    `valor_dre` já assinado: PAGAR negativo, RECEBER positivo), por competência. Quebras por
@@ -110,7 +119,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("mcp_locanorte")
 
 TZ = ZoneInfo("America/Sao_Paulo")
-CONTRATO_VERSAO = "1.13.0"
+CONTRATO_VERSAO = "1.14.0"
 
 mcp = FastMCP(
     "MCP Locanorte HTTP",
@@ -164,6 +173,13 @@ DRE_NIVEIS = os.environ.get(
 COL_DRE_N1 = os.environ.get("KONDADO_COL_DRE_N1", (DRE_NIVEIS.split(",")[0].strip() or "descricaodre_n1"))
 DRE_RECEITA_MARCADOR = os.environ.get("KONDADO_DRE_RECEITA_MARCADOR", "Receita")
 DRE_COMPETENCIA = os.environ.get("KONDADO_DRE_COMPETENCIA", "")
+# (v1.14.0) Grupos do nível 1 do DRE que COMPÕEM o Resultado Operacional. Default = "1,2"
+# → (1) Lucro Bruto + (2) Despesas. Fica de FORA (só no fluxo de caixa/DFC, não na DRE):
+# (3) Investimentos/CAPEX e os lançamentos SEM classificação no DRE (não-operacionais:
+# distribuição de lucros, transferência entre contas, retenções/guias descontadas em folha).
+# Confirmado pela DRE gerencial do Power BI (medida "GER Resultado Liquido") e pelo modelo de
+# categorias v23 (guias/retenções = "baixa de passivo — fora da DRE").
+DRE_N1_RESULTADO = os.environ.get("KONDADO_DRE_N1_RESULTADO", "1,2")
 
 # --- Saldo de contas correntes (fluxo_caixa) — nomes reais confirmados no warehouse ---
 TBL_SALDO       = os.environ.get("KONDADO_TBL_SALDO",       "omie_saldo_conta_corrente")
@@ -624,13 +640,33 @@ def _resolve_faturamento(dre_rows: list[dict[str, str]] | None,
     return alt
 
 
+def _grupo_n1_dre(valor_n1: Any) -> str:
+    """Extrai o número do grupo n1 do DRE: '(2) Despesas' → '2'; '(3) Investimentos' → '3';
+    vazio/sem parênteses → '' (linha SEM classificação no DRE = fora da DRE)."""
+    s = str(valor_n1 or "").strip()
+    if s.startswith("(") and ")" in s:
+        tok = s[1:s.index(")")].strip()
+        if tok.isdigit():
+            return tok
+    return ""
+
+
 def _dre_resultado(dre_rows: list[dict[str, str]], ano: int | None = None,
                    competencia: str | None = None) -> dict[str, Any]:
-    """Resultado Operacional do DRE (soma de `valor`) separando REALIZADO de PROJETADO (derivado da data)."""
+    """
+    (v1.14.0) RESULTADO OPERACIONAL do DRE, separando REALIZADO de PROJETADO (derivado da data).
+    Só somam ao resultado os grupos n1 operacionais (DRE_N1_RESULTADO, default '1,2' = (1) Lucro
+    Bruto + (2) Despesas). Ficam de FORA (reportados em `excluidos`, aparecem no fluxo de caixa/DFC,
+    não na DRE): (3) Investimentos/CAPEX e os lançamentos SEM classificação no DRE (não-operacionais:
+    distribuição de lucros, transferência entre contas, retenções/guias descontadas em folha).
+    """
     ref = _agora().strftime("%Y-%m")
     ano_alvo = ano or _agora().year
-    por_mes: dict[str, float] = {}
-    por_n1: dict[str, float] = {}
+    grupos_result = {g.strip() for g in DRE_N1_RESULTADO.split(",") if g.strip()}
+
+    op_por_mes: dict[str, float] = {}        # resultado OPERACIONAL por competência
+    por_n1: dict[str, float] = {}            # todos os n1 (realizado) p/ transparência
+    capex = nao_classif = 0.0                # excluídos do resultado operacional (escopo todo)
     for r in dre_rows:
         comp = _competencia_de(r.get(COL_DRE_DATA))
         if not comp:
@@ -641,25 +677,42 @@ def _dre_resultado(dre_rows: list[dict[str, str]], ano: int | None = None,
         elif not comp.startswith(f"{ano_alvo:04d}-"):
             continue
         v = _to_float(r.get(COL_DRE_VALOR))
-        por_mes[comp] = por_mes.get(comp, 0.0) + v
+        g = _grupo_n1_dre(r.get(COL_DRE_N1))
+        if g in grupos_result:
+            op_por_mes[comp] = op_por_mes.get(comp, 0.0) + v
+        elif g == "":
+            nao_classif += v
+        else:
+            capex += v                       # (3) Investimentos e quaisquer grupos fora do resultado
         if comp <= ref:
-            n1 = str(r.get(COL_DRE_N1, "") or "").strip() or "(sem n1)"
+            n1 = str(r.get(COL_DRE_N1, "") or "").strip() or "(sem classificação DRE)"
             por_n1[n1] = por_n1.get(n1, 0.0) + v
 
-    realizado = round(sum(v for c, v in por_mes.items() if c <= ref), 2)
-    projetado = round(sum(v for c, v in por_mes.items() if c >  ref), 2)
+    realizado = round(sum(v for c, v in op_por_mes.items() if c <= ref), 2)
+    projetado = round(sum(v for c, v in op_por_mes.items() if c >  ref), 2)
     return {
         "status": "ok",
         "escopo": competencia if competencia else f"ano {ano_alvo}",
         "mes_corrente": ref,
-        "criterio": "realizado = competências <= mês corrente; projetado = futuras (derivado da data)",
+        "criterio": ("Resultado Operacional = grupos n1 do DRE {" + ",".join(sorted(grupos_result)) + "} "
+                     "(default (1) Lucro Bruto + (2) Despesas). EXCLUI (3) Investimentos/CAPEX e "
+                     "lançamentos SEM classificação no DRE (não-operacionais: distribuição de lucros, "
+                     "transferência entre contas, retenções/guias descontadas em folha) — esses vão para "
+                     "o fluxo de caixa/DFC, não para a DRE. Realizado = competências <= mês corrente."),
         "resultado_realizado": realizado,
         "resultado_projetado": projetado,
         "resultado_total": round(realizado + projetado, 2),
+        "excluidos": {
+            "investimentos_capex": round(capex, 2),
+            "nao_classificado_dre": round(nao_classif, 2),
+            "observacao": ("Fora do Resultado Operacional (aparecem no fluxo de caixa/DFC, não na DRE). "
+                           "nao_classificado_dre = categorias ainda não mapeadas na estrutura do DRE no "
+                           "Omie — mapear (modelo de categorias v23) para o resultado oficial fechar 100%."),
+        },
         "por_mes": [
             {"competencia": c, "resultado": round(v, 2),
              "tipo": "realizado" if c <= ref else "projetado"}
-            for c, v in sorted(por_mes.items())
+            for c, v in sorted(op_por_mes.items())
         ],
         "linhas_n1_realizado": [
             {"linha": k, "valor": round(v, 2)}
@@ -1401,6 +1454,10 @@ def fluxo_caixa() -> dict:
 def dre_resultado(ano: int | None = None, competencia: str | None = None) -> dict:
     """
     Resultado Operacional do DRE separando REALIZADO de PROJETADO.
+    Só somam os grupos operacionais do DRE (n1 (1) Lucro Bruto + (2) Despesas); EXCLUI
+    (3) Investimentos/CAPEX e lançamentos SEM classificação no DRE (não-operacionais:
+    distribuição de lucros, transferência entre contas, retenções/guias descontadas em
+    folha) — reportados à parte em `excluidos` (esses vão para o fluxo de caixa/DFC).
     - ano: filtra um ano (ex.: 2026). Vazio = ano corrente.
     - competencia: 'AAAA-MM' para um único mês (sobrepõe `ano`).
     """
