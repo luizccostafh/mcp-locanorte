@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Ambiente / segredos (NUNCA versionar o KONDADO_TOKEN)
+.env

@@ -17,9 +17,39 @@
                            por etapa, centro de custo, cliente, tipo de serviço e mês
    - centro_custo       -> rentabilidade por caminhão: receita das OS (por ncodcc)
                            − custo das contas a pagar do mesmo centro de custo
+   - lancamentos        -> razão unificado pagar+receber (locanorte_kondado_mcp),
+                           valor_dre assinado, por competência/categoria/cliente
  Arquitetura: Omie (fonte) -> Kondado (ETL) -> [este MCP] -> Power BI / IA
  Princípio: DEGRADAÇÃO GRACIOSA EM CAMADAS (cada sub-bloco protegido isolado).
 ----------------------------------------------------------------------------
+ v1.15.0 — dre_resultado ganha o DEMONSTRATIVO: a DRE realizada linha a linha (por
+   descricaodre_n3, ordenada pelo código), com subtotais por grupo n1 e o Resultado
+   Operacional — o P&L completo, como no Power BI, a partir da hierarquia JÁ classificada
+   da tabela_dre_omie (sem casamento por nome, sem arquivo que envelhece). Validado com os
+   5 arquivos do contador (categorias_atual, .pbix, modelo v23, FECHAMENTO, plano de contas):
+   TODAS as categorias não-classificadas são intencionalmente "fora da DRE" (empréstimos,
+   PIS/COFINS s/ faturamento = guias a recolher, adiantamentos, retenções, distribuição de
+   lucros) — logo o Resultado Operacional +591.420,03 já é o correto e um motor de
+   classificação por categoria seria redundante. jan–jun/2026: Receita Líquida 1.982.578,58;
+   Lucro Bruto 1.045.100,91; Despesas -453.680,88; Resultado Operacional +591.420,03.
+ v1.14.0 — dre_resultado agora entrega o RESULTADO OPERACIONAL correto: soma só os grupos
+   operacionais do DRE (n1 (1) Lucro Bruto + (2) Despesas, via KONDADO_DRE_N1_RESULTADO) e
+   EXCLUI (3) Investimentos/CAPEX e os lançamentos SEM classificação no DRE (não-operacionais:
+   distribuição de lucros, transferência entre contas, retenções/guias descontadas em folha),
+   reportando-os à parte em `excluidos`. Antes somava TUDO (misturava CAPEX/não-operacionais).
+   Alinhado à DRE gerencial do Power BI (medida "GER Resultado Liquido" = EBIT + Res. Financeiro,
+   CAPEX/empréstimos só no DFC) e ao modelo de categorias v23. Validado jan–jun/2026:
+   Resultado Operacional = +R$ 591.420,03 (excluídos: CAPEX −80.510,06 e não-classificado
+   +302.001,40). faturamento/lancamentos inalterados.
+ v1.13.0 — NOVA TOOL lancamentos: razão UNIFICADO de contas a pagar + a receber a partir
+   da tabela curada `locanorte_kondado_mcp` (1 linha = lançamento × categoria rateada, com
+   `valor_dre` já assinado: PAGAR negativo, RECEBER positivo), por competência. Quebras por
+   categoria (com descrição), cliente/fornecedor (NOME) e mês; separa realizado x projetado;
+   exclui CANCELADO. Colunas auto-detectadas (candidatos + KONDADO_COL_MCP_*).
+   ⚠️ IMPORTANTE: `resultado_liquido_dre` = soma de `valor_dre` = NET de TODOS os títulos
+   (inclui não-operacionais como CAPEX/financiamentos) — NÃO é o Resultado Operacional oficial;
+   para esse, use `dre_resultado` (tabela_dre_omie, classificado por DRE). Confirmado ao vivo
+   (2026-07-17): a `locanorte_kondado_mcp` está no destino 40059 e NÃO carrega centro de custo.
  v1.12.0 — NOVA TOOL centro_custo: rentabilidade por centro de custo (caminhão).
    Cruza a RECEITA das OS (soma de cabecalho_nvalortotal por
    informacoesadicionais_ncodcc, exclui CANCELADA) com o CUSTO das contas a pagar
@@ -99,7 +129,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("mcp_locanorte")
 
 TZ = ZoneInfo("America/Sao_Paulo")
-CONTRATO_VERSAO = "1.12.0"
+CONTRATO_VERSAO = "1.15.0"
 
 mcp = FastMCP(
     "MCP Locanorte HTTP",
@@ -150,9 +180,20 @@ DRE_NIVEIS = os.environ.get(
     "KONDADO_DRE_NIVEIS",
     "descricaodre_n1,descricaodre_n2,descricaodre_n3,descricaodre_n4,descricaodre_n5,descricaodre_n6",
 )
-COL_DRE_N1 = os.environ.get("KONDADO_COL_DRE_N1", (DRE_NIVEIS.split(",")[0].strip() or "descricaodre_n1"))
+_DRE_NIVEIS_LST = [c.strip() for c in DRE_NIVEIS.split(",") if c.strip()]
+COL_DRE_N1 = os.environ.get("KONDADO_COL_DRE_N1", (_DRE_NIVEIS_LST[0] if _DRE_NIVEIS_LST else "descricaodre_n1"))
+# (v1.15.0) n2/n3 do DRE p/ o demonstrativo linha a linha (a DRE completa).
+COL_DRE_N2 = os.environ.get("KONDADO_COL_DRE_N2", (_DRE_NIVEIS_LST[1] if len(_DRE_NIVEIS_LST) > 1 else "descricaodre_n2"))
+COL_DRE_N3 = os.environ.get("KONDADO_COL_DRE_N3", (_DRE_NIVEIS_LST[2] if len(_DRE_NIVEIS_LST) > 2 else "descricaodre_n3"))
 DRE_RECEITA_MARCADOR = os.environ.get("KONDADO_DRE_RECEITA_MARCADOR", "Receita")
 DRE_COMPETENCIA = os.environ.get("KONDADO_DRE_COMPETENCIA", "")
+# (v1.14.0) Grupos do nível 1 do DRE que COMPÕEM o Resultado Operacional. Default = "1,2"
+# → (1) Lucro Bruto + (2) Despesas. Fica de FORA (só no fluxo de caixa/DFC, não na DRE):
+# (3) Investimentos/CAPEX e os lançamentos SEM classificação no DRE (não-operacionais:
+# distribuição de lucros, transferência entre contas, retenções/guias descontadas em folha).
+# Confirmado pela DRE gerencial do Power BI (medida "GER Resultado Liquido") e pelo modelo de
+# categorias v23 (guias/retenções = "baixa de passivo — fora da DRE").
+DRE_N1_RESULTADO = os.environ.get("KONDADO_DRE_N1_RESULTADO", "1,2")
 
 # --- Saldo de contas correntes (fluxo_caixa) — nomes reais confirmados no warehouse ---
 TBL_SALDO       = os.environ.get("KONDADO_TBL_SALDO",       "omie_saldo_conta_corrente")
@@ -227,6 +268,27 @@ CC_COD_CAND  = ["ncodcc", "codigo", "codigo_centro_custo", "ccodcc", "coddepto",
                 "ccoddepto", "codigo_departamento"]
 CC_NOME_CAND = ["descricao", "nome", "cdescricao", "centro_custo", "nome_centro_custo",
                 "descricao_centro_custo", "nome_departamento", "descricao_departamento"]
+
+# --- (v1.13.0) Tabela curada UNIFICADA (tool lancamentos) — pagar+receber rateado por categoria ---
+# locanorte_kondado_mcp: 1 linha = lançamento × categoria rateada, com valor_dre já ASSINADO
+# (PAGAR negativo, RECEBER positivo) por data_competencia. Confirmado 2026-07-17: NÃO tem centro de
+# custo (só codigo_projeto) e a soma de valor_dre é o NET de títulos — NÃO o Resultado Operacional
+# oficial (para esse, use dre_resultado / tabela_dre_omie). Colunas auto-detectadas por candidatos.
+TBL_MCP = os.environ.get("KONDADO_TBL_MCP", "locanorte_kondado_mcp")
+COL_MCP_TIPO      = os.environ.get("KONDADO_COL_MCP_TIPO",      "tipo_lancamento")
+COL_MCP_COMP      = os.environ.get("KONDADO_COL_MCP_COMP",      "data_competencia")
+COL_MCP_STATUS    = os.environ.get("KONDADO_COL_MCP_STATUS",    "status_titulo")
+COL_MCP_CATEGORIA = os.environ.get("KONDADO_COL_MCP_CATEGORIA", "codigo_categoria")
+COL_MCP_CLIENTE   = os.environ.get("KONDADO_COL_MCP_CLIENTE",   "codigo_cliente_fornecedor")
+COL_MCP_VALOR_DRE = os.environ.get("KONDADO_COL_MCP_VALOR_DRE", "valor_dre")
+COL_MCP_VALOR_DOC = os.environ.get("KONDADO_COL_MCP_VALOR_DOC", "valor_documento")
+MCP_TIPO_CAND    = ["tipo_lancamento", "tipo", "origem"]
+MCP_COMP_CAND    = ["data_competencia", "competencia", "data_emissao", "dt_competencia"]
+MCP_STATUS_CAND  = ["status_titulo", "status", "situacao"]
+MCP_CATEG_CAND   = ["codigo_categoria", "categoria", "cod_categoria", "codigo_cat"]
+MCP_CLIENTE_CAND = ["codigo_cliente_fornecedor", "codigo_cliente", "codigo_fornecedor", "cliente_fornecedor"]
+MCP_VDRE_CAND    = ["valor_dre", "valor_rateado", "valor"]
+MCP_VDOC_CAND    = ["valor_documento", "valor_titulo", "valor"]
 
 
 # ----------------------------------------------------------------------------
@@ -592,13 +654,36 @@ def _resolve_faturamento(dre_rows: list[dict[str, str]] | None,
     return alt
 
 
+def _grupo_n1_dre(valor_n1: Any) -> str:
+    """Extrai o número do grupo n1 do DRE: '(2) Despesas' → '2'; '(3) Investimentos' → '3';
+    vazio/sem parênteses → '' (linha SEM classificação no DRE = fora da DRE)."""
+    s = str(valor_n1 or "").strip()
+    if s.startswith("(") and ")" in s:
+        tok = s[1:s.index(")")].strip()
+        if tok.isdigit():
+            return tok
+    return ""
+
+
 def _dre_resultado(dre_rows: list[dict[str, str]], ano: int | None = None,
                    competencia: str | None = None) -> dict[str, Any]:
-    """Resultado Operacional do DRE (soma de `valor`) separando REALIZADO de PROJETADO (derivado da data)."""
+    """
+    (v1.14.0) RESULTADO OPERACIONAL do DRE, separando REALIZADO de PROJETADO (derivado da data).
+    Só somam ao resultado os grupos n1 operacionais (DRE_N1_RESULTADO, default '1,2' = (1) Lucro
+    Bruto + (2) Despesas). Ficam de FORA (reportados em `excluidos`, aparecem no fluxo de caixa/DFC,
+    não na DRE): (3) Investimentos/CAPEX e os lançamentos SEM classificação no DRE (não-operacionais:
+    distribuição de lucros, transferência entre contas, retenções/guias descontadas em folha).
+    """
     ref = _agora().strftime("%Y-%m")
     ano_alvo = ano or _agora().year
-    por_mes: dict[str, float] = {}
-    por_n1: dict[str, float] = {}
+    grupos_result = {g.strip() for g in DRE_N1_RESULTADO.split(",") if g.strip()}
+
+    op_por_mes: dict[str, float] = {}        # resultado OPERACIONAL por competência
+    por_n1: dict[str, float] = {}            # todos os n1 (realizado) p/ transparência
+    por_linha: dict[str, float] = {}         # (v1.15.0) demonstrativo: linha do DRE (n3) -> valor (realizado, operacional)
+    grupo_label: dict[str, str] = {}         # número do grupo n1 -> rótulo completo
+    op_grupo: dict[str, float] = {}          # grupo operacional -> valor (realizado)
+    capex = nao_classif = 0.0                # excluídos do resultado operacional (escopo todo)
     for r in dre_rows:
         comp = _competencia_de(r.get(COL_DRE_DATA))
         if not comp:
@@ -609,30 +694,67 @@ def _dre_resultado(dre_rows: list[dict[str, str]], ano: int | None = None,
         elif not comp.startswith(f"{ano_alvo:04d}-"):
             continue
         v = _to_float(r.get(COL_DRE_VALOR))
-        por_mes[comp] = por_mes.get(comp, 0.0) + v
+        n1full = str(r.get(COL_DRE_N1, "") or "").strip()
+        g = _grupo_n1_dre(n1full)
+        if g and g not in grupo_label:
+            grupo_label[g] = n1full
+        if g in grupos_result:
+            op_por_mes[comp] = op_por_mes.get(comp, 0.0) + v
+        elif g == "":
+            nao_classif += v
+        else:
+            capex += v                       # (3) Investimentos e quaisquer grupos fora do resultado
         if comp <= ref:
-            n1 = str(r.get(COL_DRE_N1, "") or "").strip() or "(sem n1)"
-            por_n1[n1] = por_n1.get(n1, 0.0) + v
+            por_n1[n1full or "(sem classificação DRE)"] = por_n1.get(n1full or "(sem classificação DRE)", 0.0) + v
+            if g in grupos_result:
+                op_grupo[g] = op_grupo.get(g, 0.0) + v
+                linha = (str(r.get(COL_DRE_N3, "") or "").strip()
+                         or str(r.get(COL_DRE_N2, "") or "").strip()
+                         or n1full or "(sem linha)")
+                por_linha[linha] = por_linha.get(linha, 0.0) + v
 
-    realizado = round(sum(v for c, v in por_mes.items() if c <= ref), 2)
-    projetado = round(sum(v for c, v in por_mes.items() if c >  ref), 2)
+    realizado = round(sum(v for c, v in op_por_mes.items() if c <= ref), 2)
+    projetado = round(sum(v for c, v in op_por_mes.items() if c >  ref), 2)
     return {
         "status": "ok",
         "escopo": competencia if competencia else f"ano {ano_alvo}",
         "mes_corrente": ref,
-        "criterio": "realizado = competências <= mês corrente; projetado = futuras (derivado da data)",
+        "criterio": ("Resultado Operacional = grupos n1 do DRE {" + ",".join(sorted(grupos_result)) + "} "
+                     "(default (1) Lucro Bruto + (2) Despesas). EXCLUI (3) Investimentos/CAPEX e "
+                     "lançamentos SEM classificação no DRE (não-operacionais: distribuição de lucros, "
+                     "transferência entre contas, retenções/guias descontadas em folha) — esses vão para "
+                     "o fluxo de caixa/DFC, não para a DRE. Realizado = competências <= mês corrente."),
         "resultado_realizado": realizado,
         "resultado_projetado": projetado,
         "resultado_total": round(realizado + projetado, 2),
+        "excluidos": {
+            "investimentos_capex": round(capex, 2),
+            "nao_classificado_dre": round(nao_classif, 2),
+            "observacao": ("Fora do Resultado Operacional (aparecem no fluxo de caixa/DFC, não na DRE). "
+                           "nao_classificado_dre = categorias ainda não mapeadas na estrutura do DRE no "
+                           "Omie — mapear (modelo de categorias v23) para o resultado oficial fechar 100%."),
+        },
         "por_mes": [
             {"competencia": c, "resultado": round(v, 2),
              "tipo": "realizado" if c <= ref else "projetado"}
-            for c, v in sorted(por_mes.items())
+            for c, v in sorted(op_por_mes.items())
         ],
         "linhas_n1_realizado": [
             {"linha": k, "valor": round(v, 2)}
             for k, v in sorted(por_n1.items(), key=lambda x: abs(x[1]), reverse=True)
         ],
+        "demonstrativo_realizado": {
+            "criterio": "DRE realizada linha a linha (descricaodre_n3) só dos grupos operacionais; "
+                        "ordenada pelo código do DRE. Subtotais por grupo n1 + Resultado Operacional.",
+            "linhas": [
+                {"linha": k, "valor": round(v, 2)} for k, v in sorted(por_linha.items())
+            ],
+            "subtotais_por_grupo": [
+                {"grupo": grupo_label.get(g, g), "valor": round(op_grupo[g], 2)}
+                for g in sorted(op_grupo)
+            ],
+            "resultado_operacional": realizado,
+        },
     }
 
 
@@ -1144,6 +1266,136 @@ def _centro_custo(competencia: str | None, limite: int) -> dict[str, Any]:
 
 
 # ----------------------------------------------------------------------------
+# 4.7) LANÇAMENTOS — razão unificado pagar+receber (locanorte_kondado_mcp)
+# ----------------------------------------------------------------------------
+def _resolve_cat_map() -> tuple[dict[str, str], str]:
+    """De-para {codigo_categoria: descrição}: DRE (primário) → omie_categorias (fallback)."""
+    try:
+        dre_rows = _fetch_csv(TBL_DRE)
+    except Exception as exc:
+        logger.warning("Falha ao buscar DRE (cat_map): %s", exc)
+        dre_rows = None
+    cat_map = _mapa_categorias(dre_rows)
+    if cat_map:
+        return cat_map, "DRE"
+    cat_map = _safe_map("mapa_categorias_cadastro", _mapa_categorias_cadastro)
+    return cat_map, ("omie_categorias" if cat_map else "indisponivel")
+
+
+def _lancamentos(competencia: str | None, limite: int) -> dict[str, Any]:
+    """
+    (v1.13.0) Razão UNIFICADO de contas a pagar + a receber a partir da tabela curada
+    `locanorte_kondado_mcp` (1 linha = lançamento × categoria rateada; `valor_dre` já
+    com sinal: PAGAR negativo, RECEBER positivo), por competência. Exclui CANCELADO.
+    Quebras por categoria (com descrição), cliente/fornecedor (NOME) e mês, separando
+    REALIZADO x PROJETADO (competência <= mês corrente).
+
+    ⚠️ `resultado_liquido_dre` = soma de `valor_dre` = NET de TODOS os títulos (inclui
+    não-operacionais como CAPEX/financiamentos). NÃO é o Resultado Operacional oficial —
+    para esse, use `dre_resultado` (tabela_dre_omie, classificado por DRE).
+    """
+    rows = _fetch_csv(TBL_MCP)
+    if not rows:
+        return {"status": "ok", "fonte": TBL_MCP, "escopo": competencia or "todas",
+                "qtd_lancamentos": 0, "observacao": f"{TBL_MCP} sem linhas."}
+
+    h = list(rows[0].keys())
+    c_tipo = _detecta_coluna(h, [COL_MCP_TIPO, *MCP_TIPO_CAND])
+    c_comp = _detecta_coluna(h, [COL_MCP_COMP, *MCP_COMP_CAND])
+    c_stat = _detecta_coluna(h, [COL_MCP_STATUS, *MCP_STATUS_CAND])
+    c_cat  = _detecta_coluna(h, [COL_MCP_CATEGORIA, *MCP_CATEG_CAND])
+    c_cli  = _detecta_coluna(h, [COL_MCP_CLIENTE, *MCP_CLIENTE_CAND])
+    c_vdre = _detecta_coluna(h, [COL_MCP_VALOR_DRE, *MCP_VDRE_CAND])
+    c_vdoc = _detecta_coluna(h, [COL_MCP_VALOR_DOC, *MCP_VDOC_CAND])
+    if not c_vdre:
+        return {"status": "indisponivel",
+                "erro": f"não encontrei a coluna de valor (valor_dre) em {TBL_MCP}.",
+                "colunas_disponiveis": h,
+                "dica": "defina KONDADO_COL_MCP_VALOR_DRE com o nome correto."}
+
+    ref = _agora().strftime("%Y-%m")
+    cancelados = _set_env(STATUS_CANCELADO)
+    cat_map, fonte_cat = _resolve_cat_map()
+    nome_map = _safe_map("mapa_clientes", _mapa_clientes)
+
+    tot_receber = tot_pagar = tot_doc = 0.0
+    qtd = qtd_receber = qtd_pagar = 0
+    por_cat: dict[str, dict[str, Any]] = {}
+    por_cli: dict[str, dict[str, Any]] = {}
+    por_mes: dict[str, float] = {}
+    for r in rows:
+        if c_stat and str(r.get(c_stat, "") or "").strip().upper() in cancelados:
+            continue
+        comp = _competencia_de(r.get(c_comp) if c_comp else None)
+        if competencia and comp != competencia:
+            continue
+        vdre = _to_float(r.get(c_vdre))
+        vdoc = _to_float(r.get(c_vdoc)) if c_vdoc else 0.0
+        tipo = str(r.get(c_tipo, "") or "").strip().upper() if c_tipo else ""
+        qtd += 1
+        tot_doc += vdoc
+        if tipo.startswith("REC") or (not tipo and vdre >= 0):
+            tot_receber += vdre
+            qtd_receber += 1
+        else:
+            tot_pagar += vdre
+            qtd_pagar += 1
+        cod_cat = (_norm_cod(r.get(c_cat)) if c_cat else "") or "(sem categoria)"
+        a = por_cat.setdefault(cod_cat, {"valor_dre": 0.0, "qtd": 0})
+        a["valor_dre"] += vdre
+        a["qtd"] += 1
+        cod_cli = (_norm_cod(r.get(c_cli)) if c_cli else "") or "(sem cliente/fornecedor)"
+        b = por_cli.setdefault(cod_cli, {"valor_dre": 0.0, "qtd": 0})
+        b["valor_dre"] += vdre
+        b["qtd"] += 1
+        if comp:
+            por_mes[comp] = por_mes.get(comp, 0.0) + vdre
+
+    net = round(tot_receber + tot_pagar, 2)
+    realizado = round(sum(v for c, v in por_mes.items() if c <= ref), 2)
+    projetado = round(sum(v for c, v in por_mes.items() if c >  ref), 2)
+
+    top_categorias = [
+        {"codigo": cod, "descricao": cat_map.get(cod) or "(sem descrição)",
+         "valor_dre": round(a["valor_dre"], 2), "qtd": a["qtd"]}
+        for cod, a in sorted(por_cat.items(), key=lambda x: abs(x[1]["valor_dre"]), reverse=True)[:limite]
+    ]
+    top_clientes = [
+        {"cliente_fornecedor": nome_map.get(cod) or cod, "codigo": cod,
+         "valor_dre": round(b["valor_dre"], 2), "qtd": b["qtd"]}
+        for cod, b in sorted(por_cli.items(), key=lambda x: abs(x[1]["valor_dre"]), reverse=True)[:limite]
+    ]
+
+    return {
+        "status": "ok",
+        "fonte": TBL_MCP,
+        "escopo": competencia or "todas as competências",
+        "mes_corrente": ref,
+        "fonte_categoria": fonte_cat,
+        "fonte_nome": "omie_clientes" if nome_map else "indisponivel (exibindo código)",
+        "aviso": ("resultado_liquido_dre = soma de valor_dre = NET de TODOS os títulos (inclui "
+                  "não-operacionais como CAPEX/financiamentos). NÃO é o Resultado Operacional oficial; "
+                  "para esse use dre_resultado (tabela_dre_omie, classificado por DRE)."),
+        "qtd_lancamentos": qtd,
+        "a_receber_valor_dre": round(tot_receber, 2),
+        "a_pagar_valor_dre": round(tot_pagar, 2),
+        "resultado_liquido_dre": net,
+        "resultado_realizado": realizado,
+        "resultado_projetado": projetado,
+        "valor_documento_total": round(tot_doc, 2),
+        "qtd_a_receber": qtd_receber,
+        "qtd_a_pagar": qtd_pagar,
+        "top_categorias": top_categorias,
+        "top_clientes_fornecedores": top_clientes,
+        "por_mes": [
+            {"competencia": c, "valor_dre": round(v, 2),
+             "tipo": "realizado" if c <= ref else "projetado"}
+            for c, v in sorted(por_mes.items())
+        ],
+    }
+
+
+# ----------------------------------------------------------------------------
 # 5) TOOLS
 # ----------------------------------------------------------------------------
 @mcp.tool()
@@ -1239,6 +1491,12 @@ def fluxo_caixa() -> dict:
 def dre_resultado(ano: int | None = None, competencia: str | None = None) -> dict:
     """
     Resultado Operacional do DRE separando REALIZADO de PROJETADO.
+    Só somam os grupos operacionais do DRE (n1 (1) Lucro Bruto + (2) Despesas); EXCLUI
+    (3) Investimentos/CAPEX e lançamentos SEM classificação no DRE (não-operacionais:
+    distribuição de lucros, transferência entre contas, retenções/guias descontadas em
+    folha) — reportados à parte em `excluidos` (esses vão para o fluxo de caixa/DFC).
+    Inclui `demonstrativo_realizado`: a DRE linha a linha (Receita → Deduções → Custo →
+    Lucro Bruto → Despesas por tipo → Resultado Operacional), da hierarquia da tabela_dre_omie.
     - ano: filtra um ano (ex.: 2026). Vazio = ano corrente.
     - competencia: 'AAAA-MM' para um único mês (sobrepõe `ano`).
     """
@@ -1356,6 +1614,38 @@ def centro_custo(competencia: str | None = None, limite: int = 10) -> dict:
     if not KONDADO_TOKEN:
         return {"status": "indisponivel", "erro": "KONDADO_TOKEN não configurado nas variáveis de ambiente."}
     bloco = _safe("centro_custo", lambda: _centro_custo(comp, limite))
+    return {
+        "contrato_versao": CONTRATO_VERSAO,
+        "data_referencia": _agora().isoformat(timespec="seconds"),
+        **bloco,
+    }
+
+
+@mcp.tool()
+def lancamentos(competencia: str | None = None, limite: int = 10) -> dict:
+    """
+    Razão UNIFICADO de contas a pagar + a receber (tabela curada locanorte_kondado_mcp),
+    por competência, com valor_dre já assinado (PAGAR negativo, RECEBER positivo). Exclui
+    CANCELADO. Quebras por categoria (com descrição), cliente/fornecedor (NOME) e mês;
+    separa realizado x projetado.
+    - competencia: 'AAAA-MM' filtra pela data_competencia (vazio = todas).
+    - limite: tamanho dos rankings (default 10; mínimo 1).
+    ⚠️ resultado_liquido_dre é o NET de TODOS os títulos (inclui não-operacionais como
+    CAPEX/financiamentos); NÃO é o Resultado Operacional oficial — para esse use dre_resultado.
+    """
+    try:
+        comp = _valida_competencia(competencia)
+    except ValueError as exc:
+        return {"status": "erro", "erro": str(exc)}
+    try:
+        limite = int(limite)
+    except (TypeError, ValueError):
+        return {"status": "erro", "erro": f"limite inválido: '{limite}'. Use um inteiro, ex.: 10."}
+    if limite < 1:
+        limite = 10
+    if not KONDADO_TOKEN:
+        return {"status": "indisponivel", "erro": "KONDADO_TOKEN não configurado nas variáveis de ambiente."}
+    bloco = _safe("lancamentos", lambda: _lancamentos(comp, limite))
     return {
         "contrato_versao": CONTRATO_VERSAO,
         "data_referencia": _agora().isoformat(timespec="seconds"),

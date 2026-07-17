@@ -35,14 +35,19 @@ Endpoint Streamable HTTP:  https://mcp-locanorte.onrender.com/mcp
         ▼
 Claude → Settings → Connectors → conector "MCP Locanorte"
         ▼
-Tools (8): status_locanorte, resumo_locanorte, faturamento, fluxo_caixa,
-           dre_resultado, top_clientes, coletas, centro_custo (dados reais)
+Tools (9): status_locanorte, resumo_locanorte, faturamento, fluxo_caixa,
+           dre_resultado, top_clientes, coletas, centro_custo, lancamentos (dados reais)
 ```
 
 **Destinos Via Kondado:** **40059** = VIVO (o `server.py` lê via `KONDADO_TOKEN`);
-**39010** = MORTO (`SCHEMA_NOT_FOUND`). O MCP nativo do Kondado (`run_query`) aponta para o 39010
-— não serve p/ amostrar os dados do servidor; use o hub CSV (40059). Integrações no conector Omie
-**39483 → destino 40059**.
+**39010** = MORTO (`SCHEMA_NOT_FOUND`). Integrações no conector Omie **39483 → destino 40059**.
+
+> **Atualização 2026-07-17:** o conector **MCP do Kondado** (`run_query` KSQL) disponível no Claude Code
+> agora aponta para um **destino VIVO** com todas as tabelas reais — dá para amostrar os dados do servidor
+> por ele (antes caía no 39010 morto). Confirmado via `list_tables`/`run_query`: `tabela_dre_omie`
+> **populada** (1.371 linhas) e nova tabela curada `locanorte_kondado_mcp` (2.203 linhas, pagar+receber
+> unificados com `valor_dre` rateado por categoria). ⚠️ Inspecionada em 2026-07-17: NÃO tem centro de
+> custo/`ncodcc` e a soma de `valor_dre` NÃO é o Resultado Operacional oficial — ver seção 8, item 8.
 
 Relação com o **Kondado** (decisão do usuário): o Kondado continua sendo a camada de
 **ETL/integração** (Omie → data warehouse → Power BI **e** este MCP). O MCP é a camada de
@@ -50,7 +55,32 @@ Relação com o **Kondado** (decisão do usuário): o Kondado continua sendo a c
 
 ---
 
-## 3. server.py atual (v1.12.0 — no ar)
+## 3. server.py atual (v1.15.0 — no ar)
+
+> **v1.15.0 — `dre_resultado` ganha o DEMONSTRATIVO (DRE linha a linha):** `demonstrativo_realizado`
+> traz a DRE realizada por `descricaodre_n3` (ordenada pelo código), com subtotais por grupo n1 e o
+> Resultado Operacional — o P&L completo (como no Power BI), da hierarquia JÁ classificada da
+> `tabela_dre_omie` (sem casamento por nome, sem arquivo que envelhece). Validado com os 5 arquivos do
+> contador (categorias_atual, .pbix, modelo v23, FECHAMENTO_202606_V5, plano de contas): TODAS as
+> categorias não-classificadas são intencionalmente fora da DRE (empréstimos, PIS/COFINS s/ faturamento
+> = guias a recolher, adiantamentos, retenções, distribuição de lucros) → o Resultado Operacional
+> +591.420,03 já é o correto e um motor de classificação por categoria seria redundante.
+
+> **v1.14.0 — `dre_resultado` = RESULTADO OPERACIONAL correto:** soma só os grupos operacionais do DRE
+> (n1 (1) Lucro Bruto + (2) Despesas, via `KONDADO_DRE_N1_RESULTADO`) e EXCLUI (3) Investimentos/CAPEX
+> e os lançamentos SEM classificação no DRE (não-operacionais: distribuição de lucros, transferência
+> entre contas, retenções/guias descontadas em folha), reportados à parte em `excluidos`. Antes somava
+> TUDO (misturava CAPEX/não-operacionais). Alinhado à DRE gerencial do Power BI (`GER Resultado Liquido`
+> = EBIT + Res. Financeiro; CAPEX/empréstimos só no DFC) e ao modelo de categorias v23. jan–jun/2026:
+> **+R$ 591.420,03** (excluídos: CAPEX −80.510,06 e não-classificado +302.001,40). Para o oficial fechar
+> 100%: importar no Omie o modelo de plano de contas/categorias v23 (mapeia as categorias restantes).
+
+> **v1.13.0 — NOVA TOOL `lancamentos`:** razão UNIFICADO de contas a pagar + a receber a partir da
+> tabela curada `locanorte_kondado_mcp` (1 linha = lançamento × categoria rateada; `valor_dre` já
+> assinado). Quebras por categoria (descrição), cliente/fornecedor (NOME) e mês; separa realizado x
+> projetado; exclui CANCELADO. ⚠️ `resultado_liquido_dre` = NET de todos os títulos (inclui
+> não-operacionais) — NÃO é o Resultado Operacional oficial (use `dre_resultado`). A tabela foi
+> inspecionada ao vivo (2026-07-17): está no destino 40059 e NÃO carrega centro de custo/`ncodcc`.
 
 > **Evolução v1.6.0 → v1.12.0 (resumo):** parâmetros tipados (`competencia`/`ano`/`limite`);
 > tools `faturamento`, `dre_resultado`, `top_clientes`, `coletas`, `centro_custo`; FALLBACKS quando a
@@ -229,22 +259,22 @@ que o usuário exportou manualmente (DRE em `.xlsx`, lote de NFS-e em `.zip`).
 2. ✅ **Tools operacionais/financeiras** — `fluxo_caixa` (v1.5.0), `faturamento` (v1.6.0),
    `dre_resultado` (v1.7.0), `top_clientes` (v1.8.0), `coletas` (v1.11.0) e `centro_custo` (v1.12.0 —
    rentabilidade por caminhão) entregues e validados. A seguir: detalhe de uma OS, clientes por
-   tag/característica. Atenção: `coletas`, `centro_custo` e `caixa_hoje` refletem o ÚLTIMO sync —
-   sync de `omie_saldo_conta_corrente`/OS/NFS-e em `2026-06-17` (mais antigo que títulos/DRE/categorias,
-   em `2026-06-23`; conferido em 2026-07-07, ver seção 6.1) — conferir a cadência do pipeline dessas
-   tabelas operacionais especificamente.
-   ✅ Bug do `caixa_hoje.data_saldo_base` voltar no futuro: corrigido na v1.11.1 (ignora saldo de data
-   futura). ⚠️ `centro_custo`: confirmar onde o Omie/Kondado guardam o centro de custo nas contas a pagar
-   (pode estar num rateio/filha) — se `custo` voltar `indisponivel`, apontar `KONDADO_COL_PAGAR_CC` ou
-   adicionar o join pela filha numa v1.12.1.
-3. ✅ **DRE oficial (correção 2026-07-07)** — a `tabela_dre_omie` **NÃO está mais vazia** no 40059
-   (1303 linhas, sync 2026-06-23; ver seção 6.1). O `server.py` já usa a DRE como fonte primária para
-   competências fechadas; `faturamento`/`dre_resultado` só caem no fallback (NFS-e/títulos) para o mês
-   corrente ainda em aberto. ⚠️ Pendências: (a) `dre_resultado()` não tem a mesma guarda de
-   `linhas_consideradas > 0` que `faturamento()` tem — pode reportar `resultado_total: 0` no lugar de
-   cair pro fallback quando a competência pedida ainda não tem linha na DRE; (b) reconciliar o gap de
-   ~R$ 29.560 encontrado em jun/2026 entre a Receita Líquida da DRE e o valor líquido das NFS-e emitidas
-   no mês.
+   tag/característica. ✅ **Sync RELIGADO (2026-07-17):** o pipeline voltou a rodar — títulos/categorias
+   em 2026-06-23, OS/saldo em 2026-06-17, DRE em 2026-07-16 (antes parado em 2026-05-26); `coletas`,
+   `centro_custo` e `caixa_hoje` refletem o último sync. ✅ Bug do `caixa_hoje.data_saldo_base` voltar
+   no futuro: corrigido na v1.11.1. ⚠️ `centro_custo`: confirmar onde o Omie/Kondado guardam o centro de
+   custo nas contas a pagar (pode estar num rateio/filha) — se `custo` voltar `indisponivel`, apontar
+   `KONDADO_COL_PAGAR_CC` ou adicionar o join pela filha numa v1.12.1 (a `locanorte_kondado_mcp` já traz
+   isso rateado — ver item 8).
+3. ✅ **DRE oficial DESTRAVADO (validado 2026-07-17)** — a `tabela_dre_omie` voltou a ter dados (1.371
+   linhas, `last_updated` 2026-07-16). `faturamento` e `dre_resultado` usam o DRE oficial, não mais os
+   fallbacks. Conferido jan–jun/2026: Receita Líquida R$ 1.982.578,58; Lucro Bruto 1.045.100,91;
+   **Resultado Operacional +R$ 591.420,03** (após CAPEX +510.909,97) — no patamar dos ~629 mil da
+   referência DAX (gap = base de data `data_emissao` vs competência). ⚠️ Restam R$ 302.001,40 de
+   lançamentos SEM classificação no DRE (`niveldre`/`totalizadre` vazios) — categorias a mapear no Omie.
+   ⚠️ Pendência herdada (2026-07-07): `dre_resultado()` não tem a mesma guarda de `linhas_consideradas
+   > 0` que `faturamento()` — pode reportar `resultado_total: 0` em vez de cair no fallback quando a
+   competência pedida ainda não tem linha na DRE.
 4. ✅ **Parâmetros tipados** — entregue na v1.6.0 (`competencia`/`ano`/`limite`).
 5. **Governança / segurança** — religar `enable_dns_rebinding_protection=True` com allowlist
    (`allowed_hosts=["mcp-locanorte.onrender.com", "mcp-locanorte.onrender.com:*"]`,
@@ -252,6 +282,20 @@ que o usuário exportou manualmente (DRE em `.xlsx`, lote de NFS-e em `.zip`).
    Inclui **rotação periódica do `KONDADO_TOKEN`** — procedimento documentado na seção 10.
 6. **Custo** — avaliar downgrade Standard → Starter.
 7. **Substituição futura do Kondado** — internalizar o ETL quando houver condições.
+8. 🆕 **`locanorte_kondado_mcp` — INSPECIONADA (2026-07-17):** existe no destino **40059** (modelo
+   "Kondado MCP Fin Locanorte", ID 9926) → o `server.py` PODE lê-la via hub CSV. Unifica pagar+receber
+   por lançamento × categoria rateada; 13 colunas (`tipo_lancamento`, `codigo_lancamento_omie`,
+   `codigo_cliente_fornecedor`, `codigo_projeto`, `data_competencia`, `data_vencimento`, `status_titulo`,
+   `codigo_categoria`, `percentual_categoria`, `valor_rateado`, `valor_dre`, `valor_documento`).
+   ⚠️ **A inspeção derrubou as duas hipóteses:** (a) **NÃO tem centro de custo/`ncodcc`** (só
+   `codigo_projeto`) → não destrava o CUSTO do `centro_custo`; (b) somar `valor_dre` **NÃO é** o
+   Resultado Operacional oficial — jan–jun/2026 dá net **−33.416** (todos os títulos, inclui
+   não-operacionais) vs **+591.420** do `tabela_dre_omie`. Falta-lhe a classificação DRE. Como o DRE
+   oficial voltou (item 3), **NÃO** migrar `dre_resultado`/`faturamento` para esta tabela como primária.
+   ✅ **DECISÃO (2026-07-17): tool `lancamentos` (v1.13.0) implementada** — razão unificado pagar+receber
+   por competência/categoria/cliente, `valor_dre` assinado, `resultado_liquido_dre` rotulado como NET
+   (≠ Resultado Operacional oficial). Aditiva, sem tocar no que já funciona. Fallback melhorado do
+   `_dre_resultado_titulos` fica como evolução futura de baixa prioridade (DRE oficial já de pé).
 
 ---
 
