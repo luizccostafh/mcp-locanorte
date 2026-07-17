@@ -17,9 +17,20 @@
                            por etapa, centro de custo, cliente, tipo de serviço e mês
    - centro_custo       -> rentabilidade por caminhão: receita das OS (por ncodcc)
                            − custo das contas a pagar do mesmo centro de custo
+   - lancamentos        -> razão unificado pagar+receber (locanorte_kondado_mcp),
+                           valor_dre assinado, por competência/categoria/cliente
  Arquitetura: Omie (fonte) -> Kondado (ETL) -> [este MCP] -> Power BI / IA
  Princípio: DEGRADAÇÃO GRACIOSA EM CAMADAS (cada sub-bloco protegido isolado).
 ----------------------------------------------------------------------------
+ v1.13.0 — NOVA TOOL lancamentos: razão UNIFICADO de contas a pagar + a receber a partir
+   da tabela curada `locanorte_kondado_mcp` (1 linha = lançamento × categoria rateada, com
+   `valor_dre` já assinado: PAGAR negativo, RECEBER positivo), por competência. Quebras por
+   categoria (com descrição), cliente/fornecedor (NOME) e mês; separa realizado x projetado;
+   exclui CANCELADO. Colunas auto-detectadas (candidatos + KONDADO_COL_MCP_*).
+   ⚠️ IMPORTANTE: `resultado_liquido_dre` = soma de `valor_dre` = NET de TODOS os títulos
+   (inclui não-operacionais como CAPEX/financiamentos) — NÃO é o Resultado Operacional oficial;
+   para esse, use `dre_resultado` (tabela_dre_omie, classificado por DRE). Confirmado ao vivo
+   (2026-07-17): a `locanorte_kondado_mcp` está no destino 40059 e NÃO carrega centro de custo.
  v1.12.0 — NOVA TOOL centro_custo: rentabilidade por centro de custo (caminhão).
    Cruza a RECEITA das OS (soma de cabecalho_nvalortotal por
    informacoesadicionais_ncodcc, exclui CANCELADA) com o CUSTO das contas a pagar
@@ -99,7 +110,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("mcp_locanorte")
 
 TZ = ZoneInfo("America/Sao_Paulo")
-CONTRATO_VERSAO = "1.12.0"
+CONTRATO_VERSAO = "1.13.0"
 
 mcp = FastMCP(
     "MCP Locanorte HTTP",
@@ -227,6 +238,27 @@ CC_COD_CAND  = ["ncodcc", "codigo", "codigo_centro_custo", "ccodcc", "coddepto",
                 "ccoddepto", "codigo_departamento"]
 CC_NOME_CAND = ["descricao", "nome", "cdescricao", "centro_custo", "nome_centro_custo",
                 "descricao_centro_custo", "nome_departamento", "descricao_departamento"]
+
+# --- (v1.13.0) Tabela curada UNIFICADA (tool lancamentos) — pagar+receber rateado por categoria ---
+# locanorte_kondado_mcp: 1 linha = lançamento × categoria rateada, com valor_dre já ASSINADO
+# (PAGAR negativo, RECEBER positivo) por data_competencia. Confirmado 2026-07-17: NÃO tem centro de
+# custo (só codigo_projeto) e a soma de valor_dre é o NET de títulos — NÃO o Resultado Operacional
+# oficial (para esse, use dre_resultado / tabela_dre_omie). Colunas auto-detectadas por candidatos.
+TBL_MCP = os.environ.get("KONDADO_TBL_MCP", "locanorte_kondado_mcp")
+COL_MCP_TIPO      = os.environ.get("KONDADO_COL_MCP_TIPO",      "tipo_lancamento")
+COL_MCP_COMP      = os.environ.get("KONDADO_COL_MCP_COMP",      "data_competencia")
+COL_MCP_STATUS    = os.environ.get("KONDADO_COL_MCP_STATUS",    "status_titulo")
+COL_MCP_CATEGORIA = os.environ.get("KONDADO_COL_MCP_CATEGORIA", "codigo_categoria")
+COL_MCP_CLIENTE   = os.environ.get("KONDADO_COL_MCP_CLIENTE",   "codigo_cliente_fornecedor")
+COL_MCP_VALOR_DRE = os.environ.get("KONDADO_COL_MCP_VALOR_DRE", "valor_dre")
+COL_MCP_VALOR_DOC = os.environ.get("KONDADO_COL_MCP_VALOR_DOC", "valor_documento")
+MCP_TIPO_CAND    = ["tipo_lancamento", "tipo", "origem"]
+MCP_COMP_CAND    = ["data_competencia", "competencia", "data_emissao", "dt_competencia"]
+MCP_STATUS_CAND  = ["status_titulo", "status", "situacao"]
+MCP_CATEG_CAND   = ["codigo_categoria", "categoria", "cod_categoria", "codigo_cat"]
+MCP_CLIENTE_CAND = ["codigo_cliente_fornecedor", "codigo_cliente", "codigo_fornecedor", "cliente_fornecedor"]
+MCP_VDRE_CAND    = ["valor_dre", "valor_rateado", "valor"]
+MCP_VDOC_CAND    = ["valor_documento", "valor_titulo", "valor"]
 
 
 # ----------------------------------------------------------------------------
@@ -1144,6 +1176,136 @@ def _centro_custo(competencia: str | None, limite: int) -> dict[str, Any]:
 
 
 # ----------------------------------------------------------------------------
+# 4.7) LANÇAMENTOS — razão unificado pagar+receber (locanorte_kondado_mcp)
+# ----------------------------------------------------------------------------
+def _resolve_cat_map() -> tuple[dict[str, str], str]:
+    """De-para {codigo_categoria: descrição}: DRE (primário) → omie_categorias (fallback)."""
+    try:
+        dre_rows = _fetch_csv(TBL_DRE)
+    except Exception as exc:
+        logger.warning("Falha ao buscar DRE (cat_map): %s", exc)
+        dre_rows = None
+    cat_map = _mapa_categorias(dre_rows)
+    if cat_map:
+        return cat_map, "DRE"
+    cat_map = _safe_map("mapa_categorias_cadastro", _mapa_categorias_cadastro)
+    return cat_map, ("omie_categorias" if cat_map else "indisponivel")
+
+
+def _lancamentos(competencia: str | None, limite: int) -> dict[str, Any]:
+    """
+    (v1.13.0) Razão UNIFICADO de contas a pagar + a receber a partir da tabela curada
+    `locanorte_kondado_mcp` (1 linha = lançamento × categoria rateada; `valor_dre` já
+    com sinal: PAGAR negativo, RECEBER positivo), por competência. Exclui CANCELADO.
+    Quebras por categoria (com descrição), cliente/fornecedor (NOME) e mês, separando
+    REALIZADO x PROJETADO (competência <= mês corrente).
+
+    ⚠️ `resultado_liquido_dre` = soma de `valor_dre` = NET de TODOS os títulos (inclui
+    não-operacionais como CAPEX/financiamentos). NÃO é o Resultado Operacional oficial —
+    para esse, use `dre_resultado` (tabela_dre_omie, classificado por DRE).
+    """
+    rows = _fetch_csv(TBL_MCP)
+    if not rows:
+        return {"status": "ok", "fonte": TBL_MCP, "escopo": competencia or "todas",
+                "qtd_lancamentos": 0, "observacao": f"{TBL_MCP} sem linhas."}
+
+    h = list(rows[0].keys())
+    c_tipo = _detecta_coluna(h, [COL_MCP_TIPO, *MCP_TIPO_CAND])
+    c_comp = _detecta_coluna(h, [COL_MCP_COMP, *MCP_COMP_CAND])
+    c_stat = _detecta_coluna(h, [COL_MCP_STATUS, *MCP_STATUS_CAND])
+    c_cat  = _detecta_coluna(h, [COL_MCP_CATEGORIA, *MCP_CATEG_CAND])
+    c_cli  = _detecta_coluna(h, [COL_MCP_CLIENTE, *MCP_CLIENTE_CAND])
+    c_vdre = _detecta_coluna(h, [COL_MCP_VALOR_DRE, *MCP_VDRE_CAND])
+    c_vdoc = _detecta_coluna(h, [COL_MCP_VALOR_DOC, *MCP_VDOC_CAND])
+    if not c_vdre:
+        return {"status": "indisponivel",
+                "erro": f"não encontrei a coluna de valor (valor_dre) em {TBL_MCP}.",
+                "colunas_disponiveis": h,
+                "dica": "defina KONDADO_COL_MCP_VALOR_DRE com o nome correto."}
+
+    ref = _agora().strftime("%Y-%m")
+    cancelados = _set_env(STATUS_CANCELADO)
+    cat_map, fonte_cat = _resolve_cat_map()
+    nome_map = _safe_map("mapa_clientes", _mapa_clientes)
+
+    tot_receber = tot_pagar = tot_doc = 0.0
+    qtd = qtd_receber = qtd_pagar = 0
+    por_cat: dict[str, dict[str, Any]] = {}
+    por_cli: dict[str, dict[str, Any]] = {}
+    por_mes: dict[str, float] = {}
+    for r in rows:
+        if c_stat and str(r.get(c_stat, "") or "").strip().upper() in cancelados:
+            continue
+        comp = _competencia_de(r.get(c_comp) if c_comp else None)
+        if competencia and comp != competencia:
+            continue
+        vdre = _to_float(r.get(c_vdre))
+        vdoc = _to_float(r.get(c_vdoc)) if c_vdoc else 0.0
+        tipo = str(r.get(c_tipo, "") or "").strip().upper() if c_tipo else ""
+        qtd += 1
+        tot_doc += vdoc
+        if tipo.startswith("REC") or (not tipo and vdre >= 0):
+            tot_receber += vdre
+            qtd_receber += 1
+        else:
+            tot_pagar += vdre
+            qtd_pagar += 1
+        cod_cat = (_norm_cod(r.get(c_cat)) if c_cat else "") or "(sem categoria)"
+        a = por_cat.setdefault(cod_cat, {"valor_dre": 0.0, "qtd": 0})
+        a["valor_dre"] += vdre
+        a["qtd"] += 1
+        cod_cli = (_norm_cod(r.get(c_cli)) if c_cli else "") or "(sem cliente/fornecedor)"
+        b = por_cli.setdefault(cod_cli, {"valor_dre": 0.0, "qtd": 0})
+        b["valor_dre"] += vdre
+        b["qtd"] += 1
+        if comp:
+            por_mes[comp] = por_mes.get(comp, 0.0) + vdre
+
+    net = round(tot_receber + tot_pagar, 2)
+    realizado = round(sum(v for c, v in por_mes.items() if c <= ref), 2)
+    projetado = round(sum(v for c, v in por_mes.items() if c >  ref), 2)
+
+    top_categorias = [
+        {"codigo": cod, "descricao": cat_map.get(cod) or "(sem descrição)",
+         "valor_dre": round(a["valor_dre"], 2), "qtd": a["qtd"]}
+        for cod, a in sorted(por_cat.items(), key=lambda x: abs(x[1]["valor_dre"]), reverse=True)[:limite]
+    ]
+    top_clientes = [
+        {"cliente_fornecedor": nome_map.get(cod) or cod, "codigo": cod,
+         "valor_dre": round(b["valor_dre"], 2), "qtd": b["qtd"]}
+        for cod, b in sorted(por_cli.items(), key=lambda x: abs(x[1]["valor_dre"]), reverse=True)[:limite]
+    ]
+
+    return {
+        "status": "ok",
+        "fonte": TBL_MCP,
+        "escopo": competencia or "todas as competências",
+        "mes_corrente": ref,
+        "fonte_categoria": fonte_cat,
+        "fonte_nome": "omie_clientes" if nome_map else "indisponivel (exibindo código)",
+        "aviso": ("resultado_liquido_dre = soma de valor_dre = NET de TODOS os títulos (inclui "
+                  "não-operacionais como CAPEX/financiamentos). NÃO é o Resultado Operacional oficial; "
+                  "para esse use dre_resultado (tabela_dre_omie, classificado por DRE)."),
+        "qtd_lancamentos": qtd,
+        "a_receber_valor_dre": round(tot_receber, 2),
+        "a_pagar_valor_dre": round(tot_pagar, 2),
+        "resultado_liquido_dre": net,
+        "resultado_realizado": realizado,
+        "resultado_projetado": projetado,
+        "valor_documento_total": round(tot_doc, 2),
+        "qtd_a_receber": qtd_receber,
+        "qtd_a_pagar": qtd_pagar,
+        "top_categorias": top_categorias,
+        "top_clientes_fornecedores": top_clientes,
+        "por_mes": [
+            {"competencia": c, "valor_dre": round(v, 2),
+             "tipo": "realizado" if c <= ref else "projetado"}
+            for c, v in sorted(por_mes.items())
+        ],
+    }
+
+
+# ----------------------------------------------------------------------------
 # 5) TOOLS
 # ----------------------------------------------------------------------------
 @mcp.tool()
@@ -1356,6 +1518,38 @@ def centro_custo(competencia: str | None = None, limite: int = 10) -> dict:
     if not KONDADO_TOKEN:
         return {"status": "indisponivel", "erro": "KONDADO_TOKEN não configurado nas variáveis de ambiente."}
     bloco = _safe("centro_custo", lambda: _centro_custo(comp, limite))
+    return {
+        "contrato_versao": CONTRATO_VERSAO,
+        "data_referencia": _agora().isoformat(timespec="seconds"),
+        **bloco,
+    }
+
+
+@mcp.tool()
+def lancamentos(competencia: str | None = None, limite: int = 10) -> dict:
+    """
+    Razão UNIFICADO de contas a pagar + a receber (tabela curada locanorte_kondado_mcp),
+    por competência, com valor_dre já assinado (PAGAR negativo, RECEBER positivo). Exclui
+    CANCELADO. Quebras por categoria (com descrição), cliente/fornecedor (NOME) e mês;
+    separa realizado x projetado.
+    - competencia: 'AAAA-MM' filtra pela data_competencia (vazio = todas).
+    - limite: tamanho dos rankings (default 10; mínimo 1).
+    ⚠️ resultado_liquido_dre é o NET de TODOS os títulos (inclui não-operacionais como
+    CAPEX/financiamentos); NÃO é o Resultado Operacional oficial — para esse use dre_resultado.
+    """
+    try:
+        comp = _valida_competencia(competencia)
+    except ValueError as exc:
+        return {"status": "erro", "erro": str(exc)}
+    try:
+        limite = int(limite)
+    except (TypeError, ValueError):
+        return {"status": "erro", "erro": f"limite inválido: '{limite}'. Use um inteiro, ex.: 10."}
+    if limite < 1:
+        limite = 10
+    if not KONDADO_TOKEN:
+        return {"status": "indisponivel", "erro": "KONDADO_TOKEN não configurado nas variáveis de ambiente."}
+    bloco = _safe("lancamentos", lambda: _lancamentos(comp, limite))
     return {
         "contrato_versao": CONTRATO_VERSAO,
         "data_referencia": _agora().isoformat(timespec="seconds"),

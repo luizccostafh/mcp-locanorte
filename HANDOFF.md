@@ -33,8 +33,8 @@ Endpoint Streamable HTTP:  https://mcp-locanorte.onrender.com/mcp
         ▼
 Claude → Settings → Connectors → conector "MCP Locanorte"
         ▼
-Tools (8): status_locanorte, resumo_locanorte, faturamento, fluxo_caixa,
-           dre_resultado, top_clientes, coletas, centro_custo (dados reais)
+Tools (9): status_locanorte, resumo_locanorte, faturamento, fluxo_caixa,
+           dre_resultado, top_clientes, coletas, centro_custo, lancamentos (dados reais)
 ```
 
 **Destinos Via Kondado:** **40059** = VIVO (o `server.py` lê via `KONDADO_TOKEN`);
@@ -53,7 +53,14 @@ Relação com o **Kondado** (decisão do usuário): o Kondado continua sendo a c
 
 ---
 
-## 3. server.py atual (v1.12.0 — no ar)
+## 3. server.py atual (v1.13.0 — no ar)
+
+> **v1.13.0 — NOVA TOOL `lancamentos`:** razão UNIFICADO de contas a pagar + a receber a partir da
+> tabela curada `locanorte_kondado_mcp` (1 linha = lançamento × categoria rateada; `valor_dre` já
+> assinado). Quebras por categoria (descrição), cliente/fornecedor (NOME) e mês; separa realizado x
+> projetado; exclui CANCELADO. ⚠️ `resultado_liquido_dre` = NET de todos os títulos (inclui
+> não-operacionais) — NÃO é o Resultado Operacional oficial (use `dre_resultado`). A tabela foi
+> inspecionada ao vivo (2026-07-17): está no destino 40059 e NÃO carrega centro de custo/`ncodcc`.
 
 > **Evolução v1.6.0 → v1.12.0 (resumo):** parâmetros tipados (`competencia`/`ano`/`limite`);
 > tools `faturamento`, `dre_resultado`, `top_clientes`, `coletas`, `centro_custo`; FALLBACKS quando a
@@ -216,8 +223,10 @@ Teste feito chamando as tools pelo conector:
    Resultado Operacional oficial — jan–jun/2026 dá net **−33.416** (todos os títulos, inclui
    não-operacionais) vs **+591.420** do `tabela_dre_omie`. Falta-lhe a classificação DRE. Como o DRE
    oficial voltou (item 3), **NÃO** migrar `dre_resultado`/`faturamento` para esta tabela como primária.
-   Uso adequado: (i) tool nova aditiva de razão unificado por competência/categoria; ou (ii) fallback
-   melhorado do `_dre_resultado_titulos`. **Decisão de escopo pendente do usuário.**
+   ✅ **DECISÃO (2026-07-17): tool `lancamentos` (v1.13.0) implementada** — razão unificado pagar+receber
+   por competência/categoria/cliente, `valor_dre` assinado, `resultado_liquido_dre` rotulado como NET
+   (≠ Resultado Operacional oficial). Aditiva, sem tocar no que já funciona. Fallback melhorado do
+   `_dre_resultado_titulos` fica como evolução futura de baixa prioridade (DRE oficial já de pé).
 
 ---
 

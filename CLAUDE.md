@@ -15,7 +15,7 @@ dados operacionais (caçambas, coletas, clientes) e governança.
 - HTTP client: **httpx** (consome o hub do Kondado em CSV)
 - Repositório: GitHub `luizccostafh/mcp-locanorte`, branch `main`
 - Hospedagem: **Render** (Web Service, plano **Standard**, always-on)
-- Arquivo principal: `server.py` (contrato **v1.12.0**)
+- Arquivo principal: `server.py` (contrato **v1.13.0**)
 
 ## COMO (rodar / deploy)
 - Build Command (Render): `pip install -r requirements.txt`
@@ -84,7 +84,7 @@ depois do fix `follow_redirects=True` (ver Regra de Ouro nº6).
    então o 302 estoura em `raise_for_status()` e todo o financeiro vira "indisponível".
    Correção: criar o client com `httpx.Client(..., follow_redirects=True)` em `_fetch_csv`.
 
-## TOOLS ATUAIS (v1.12.0 — dados reais, retornam dict/JSON) — 8 tools
+## TOOLS ATUAIS (v1.13.0 — dados reais, retornam dict/JSON) — 9 tools
 - `status_locanorte()` → health-check estruturado: serviço, status, transporte,
   `contrato_versao`, `kondado_configurado` (bool), `data_referencia` (TZ America/Sao_Paulo).
 - `resumo_locanorte(competencia?)` → resumo gerencial: base cadastral (sempre) + bloco `financeiro`
@@ -117,6 +117,14 @@ depois do fix `follow_redirects=True` (ver Regra de Ouro nº6).
   (candidatos + `KONDADO_COL_PAGAR_CC`); se não for achada (no Omie o centro de custo pode estar num
   rateio/filha), o bloco `custo` volta `indisponivel` com `colunas_disponiveis` — a receita por CC ainda
   sai (degradação graciosa). Nome do caminhão é OPT-IN via `KONDADO_TBL_CC` (default exibe o código `ncodcc`).
+- `lancamentos(competencia?, limite=10)` → **(v1.13.0)** razão **UNIFICADO** de contas a pagar + a receber
+  a partir da tabela curada `locanorte_kondado_mcp` (1 linha = lançamento × categoria rateada; `valor_dre`
+  já assinado: PAGAR negativo, RECEBER positivo). Exclui CANCELADO. Retorna `a_receber_valor_dre`,
+  `a_pagar_valor_dre`, `resultado_liquido_dre` (net) separando `resultado_realizado` x `resultado_projetado`,
+  e quebras por categoria (com descrição), cliente/fornecedor (NOME) e mês. `competencia='AAAA-MM'` filtra
+  pela `data_competencia`. Colunas auto-detectadas (`KONDADO_COL_MCP_*`). ⚠️ `resultado_liquido_dre` é o
+  NET de TODOS os títulos (inclui não-operacionais como CAPEX/financiamentos) — **NÃO** é o Resultado
+  Operacional oficial; para esse, use `dre_resultado` (fonte `tabela_dre_omie`, classificado por DRE).
 
 ## BASE CADASTRAL (hardcoded no `server.py`, sempre disponível)
 Independe do Kondado — é o fallback que `resumo_locanorte` sempre entrega:
@@ -177,9 +185,12 @@ Substituição do Kondado fica para quando houver condições de internalizar o 
        que só existe na `tabela_dre_omie`.
    ➡️ Como o **DRE oficial voltou** (item 3), a `tabela_dre_omie` continua sendo a fonte de
    `dre_resultado`/`faturamento` — **NÃO** migrar para a `locanorte_kondado_mcp` como primária
-   (regrediria o número oficial). Uso adequado: (i) tool nova aditiva de **razão unificado
-   pagar+receber por competência/categoria/cliente**; ou (ii) fallback melhorado do
-   `_dre_resultado_titulos`. Decisão pendente do usuário.
+   (regrediria o número oficial).
+   ✅ **DECISÃO (2026-07-17): opção aditiva implementada — tool `lancamentos` (v1.13.0).** Expõe o
+   **razão unificado pagar+receber** por competência/categoria/cliente com `valor_dre` assinado, SEM
+   tocar no que já funciona (zero risco de regressão). O `resultado_liquido_dre` vem rotulado como NET
+   de títulos (≠ Resultado Operacional oficial). Fallback melhorado do `_dre_resultado_titulos` fica
+   como possível evolução futura (baixa prioridade, pois o DRE oficial está de pé).
 
 ## DESTINO KONDADO (atenção — erro já cometido)
 Histórico: havia dois destinos Via Kondado — **40059** (VIVO — é o que o `server.py` lê via
