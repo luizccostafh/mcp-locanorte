@@ -283,13 +283,16 @@ que o usuário exportou manualmente (DRE em `.xlsx`, lote de NFS-e em `.zip`).
    ⚠️ Pendência herdada (2026-07-07): `dre_resultado()` não tem a mesma guarda de `linhas_consideradas
    > 0` que `faturamento()` — pode reportar `resultado_total: 0` em vez de cair no fallback quando a
    competência pedida ainda não tem linha na DRE.
-   🔴 **RESSALVA (DRE_15_07_CORRIGIDA — motor v10):** o Resultado Operacional **corrigido** jan–jun/2026
-   é **R$ 427.889,53**, não os +591.420,03 do servidor. Gap ≈ −163.530,50, dominado pelos **impostos
-   sobre vendas** (ISS/PIS/ISS-retido por serviço, ≈ −125.929,81, calculados das NFS-e) que NÃO estão na
-   `tabela_dre_omie` (montada dos lançamentos do Omie), + refinamentos de custo/despesa. Lógica do código
-   OK; gap é de FONTE. **Decisão (2026-07-17): corrigir no Omie/Kondado** (contador lança os impostos
-   sobre vendas no Omie → Kondado re-sincroniza → `dre_resultado` retorna ~427.889,53 sozinho). Até lá, o
-   servidor reflete o warehouse (591k), não a DRE corrigida (428k).
+   🟢 **DUAS VISÕES VÁLIDAS (esclarecido 2026-07-17 com o usuário):** servidor = **+R$ 591.420,03**
+   (Resultado pelos **livros do Omie**); `DRE_15_07_CORRIGIDA` (motor v10) = **+R$ 427.889,53** (visão
+   **gerencial**). O gap (−163k) é **reclassificação**, não dinheiro novo: o contador reclassifica os
+   impostos (ISS/PIS/ISS-retido, ≈ −125.929,81, das NFS-e) como **dedução da receita**; no Omie esses
+   impostos já existem como **guias/títulos** (caixa), só destacados de outra forma.
+   ⚠️ **DECISÃO CORRIGIDA:** **NÃO lançar** os impostos como novos títulos no Omie — **duplicaria**. O
+   `dre_resultado` **fica em 591k** (fiel aos livros); o **ajuste gerencial (−126k → 428k) vive no Power
+   BI** (motor v10 do contador). NÃO replicar o cálculo das NFS-e no servidor. Alternativa para expor 428k
+   no servidor (não escolhida): contador publica a DRE corrigida como tabela curada no Kondado e aponta-se
+   o `dre_resultado` pra ela. (Superada a nota anterior de "corrigir no Omie/re-sync → converge 428k".)
 4. ✅ **Parâmetros tipados** — entregue na v1.6.0 (`competencia`/`ano`/`limite`).
 5. **Governança / segurança** — religar `enable_dns_rebinding_protection=True` com allowlist
    (`allowed_hosts=["mcp-locanorte.onrender.com", "mcp-locanorte.onrender.com:*"]`,

@@ -198,16 +198,20 @@ Substituição do Kondado fica para quando houver condições de internalizar o 
    no FECHAMENTO, caixa/passivo), adiantamentos, retenções (INSS/IRRF/ISS/consignado/VT/pensão) e
    distribuição de lucros. O que a v1.15.0 agregou foi o **`demonstrativo_realizado`** (a DRE linha a
    linha, da hierarquia já classificada), não uma reclassificação.
-   🔴 **RESSALVA IMPORTANTE (DRE_15_07_CORRIGIDA — motor v10 do contador):** o Resultado Operacional
-   **CORRIGIDO** de jan–jun/2026 é **R$ 427.889,53**, NÃO os +591.420,03 que o servidor retorna hoje.
-   A `tabela_dre_omie` (montada dos lançamentos do Omie) **não inclui os impostos sobre vendas**
-   (ISS/PIS/ISS-retido por serviço, ~−125.929,81, calculados pelo contador a partir das NFS-e) nem alguns
-   refinamentos de custo/despesa → o servidor **superestima em ~163k**. O código do `dre_resultado`
-   continua correto na LÓGICA; o gap é de **fonte de dados**, não de cálculo. **DECISÃO (2026-07-17):
-   corrigir no Omie/Kondado** — o contador lança/importa os impostos sobre vendas e ajustes no Omie, o
-   Kondado re-sincroniza e a `tabela_dre_omie` passa a bater; então o `dre_resultado` retorna ~427.889,53
-   automaticamente (fonte única, sem duplicar lógica no servidor). Enquanto não sincronizar, o número do
-   servidor reflete o warehouse atual (591k), não a DRE corrigida (428k).
+   🟢 **DUAS VISÕES VÁLIDAS DO MESMO RESULTADO (esclarecido 2026-07-17 com o usuário):** o servidor
+   retorna **+R$ 591.420,03** (Resultado pelos **livros do Omie**) e a `DRE_15_07_CORRIGIDA` (motor v10 do
+   contador) mostra **+R$ 427.889,53** (visão **gerencial**). A diferença (−163k) é **reclassificação/
+   apresentação, NÃO dinheiro novo**: o contador reclassifica os impostos (ISS/PIS/ISS-retido por serviço,
+   ~−125.929,81, calculados das NFS-e) como **dedução da receita**; no Omie esses impostos já existem como
+   **guias/títulos** (impacto no caixa), só destacados de outra forma.
+   ⚠️ **DECISÃO CORRIGIDA (2026-07-17):** **NÃO lançar** os impostos sobre vendas como novos títulos no
+   Omie — **duplicaria** (as guias já estão lá). O `dre_resultado` **fica como está (591k)**, fiel aos
+   livros. O **ajuste gerencial (−126k → 428k) vive no Power BI** (onde o motor v10 do contador já roda);
+   o relatório do BI mostra as duas linhas ("Resultado livros" x "Resultado gerencial após impostos s/
+   vendas"). NÃO replicar o cálculo das NFS-e no servidor (seria motor paralelo frágil). Se um dia se
+   quiser o 428k no próprio servidor, o único caminho limpo é o contador publicar a DRE corrigida como
+   **tabela curada no Kondado** e apontar o `dre_resultado` pra ela (opção não escolhida agora).
+   (Superadas as notas anteriores que falavam em "corrigir no Omie/re-sync → converge para 428k".)
 4. ✅ **Sync do Kondado RELIGADO (validado 2026-07-17):** o pipeline voltou a rodar — títulos/categorias
    com `last_updated` em 2026-06-23, OS/saldo em 2026-06-17 e o DRE em 2026-07-16 (antes estava parado
    em 2026-05-26). `coletas`, `centro_custo` e `caixa_hoje` refletem o último sync; seguir conferindo a
