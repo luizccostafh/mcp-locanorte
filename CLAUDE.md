@@ -260,6 +260,39 @@ consolidadas no conector Omie **39483 → destino 40059**.
 > todos os títulos). Portanto **não substitui** o `tabela_dre_omie` nem destrava o `centro_custo` —
 > ver os detalhes e o uso adequado em PRÓXIMOS PASSOS, item 7.
 
+### ⚠️ Duas contas Claude, dois destinos Kondado (armadilha recorrente — conector `MCP_KONDADO`, não o `server.py`)
+A Locanorte usa **duas contas Claude** (`luizfh@locanortecacambas.com.br` e `lcrcosta@hotmail.com`).
+Cada conta autoriza o conector **`MCP_KONDADO`** (`https://mcp.kondado.io/mcp`) **de forma independente**
+via OAuth — é comum uma conta ficar presa no destino **39010 (morto)** enquanto a outra já está no
+**40059 (vivo)**. Isso é **100% do lado da autorização do conector**, não tem relação com `server.py`/Render
+(esse MCP próprio da Locanorte não sofre esse problema, pois usa `KONDADO_TOKEN` fixo do destino 40059).
+
+**Diagnóstico rápido (rodar `list_tables` do `MCP_KONDADO` na conta em dúvida):**
+| Sinal | 40059 (vivo) | 39010 (morto) |
+|-------|--------------|----------------|
+| Nº de tabelas | ~51–53 | ~38 |
+| `tabela_dre_omie` | populada (~1.372 linhas), `last_updated` recente (dias) | erro **"Schema does not exist"** |
+| Catálogo | atualiza a cada sync | **congelado em 26/05/2026** |
+
+Validado ao vivo em 2026-07-17 nesta sessão (`luizfh@...`, conta OK): `list_tables` → 53 tabelas,
+`tabela_dre_omie` com 1.372 linhas e `last_updated` 2026-07-16 → confirma destino 40059.
+
+**Correção (fazer NA CONTA presa no 39010 — aqui, `lcrcosta@hotmail.com`):**
+1. Nessa conta Claude → **Configurações → Conectores**.
+2. Remover o conector **MCP Kondado** existente (o que aponta pro destino errado). Se houver mais de
+   uma entrada de Kondado na lista, remover todas.
+3. Adicionar de novo: `https://mcp.kondado.io/mcp`.
+4. Na tela de **autorização/login da Kondado** (OAuth), quando pedir para escolher o **destino/via**,
+   selecionar explicitamente **40059** — não aceitar o destino pré-selecionado sem conferir, pois é
+   exatamente essa escolha errada que causa a reincidência no 39010.
+5. Validar: pedir para essa conta rodar `list_tables` (ou qualquer query) no `MCP_KONDADO` — deve
+   retornar ~51–53 tabelas sem erro de schema. Se ainda vier "Schema does not exist" ou o catálogo
+   travado em 26/05, a reautorização não pegou (repetir o passo 2–4 numa aba anônima/nova sessão).
+
+⚠️ Nenhuma ação no lado do Kondado (destino) ou no `server.py`/Render resolve isso — a causa é sempre
+o **conector da conta específica** apontando para o destino errado. Não confundir com a rotação do
+`KONDADO_TOKEN` (seção 10 do @HANDOFF.md) — são credenciais/mecanismos diferentes.
+
 ## CONVENÇÕES
 - Idioma do projeto: PT-BR.
 - Toda mudança no `server.py` → commit na `main` → Render redeploya automático.
